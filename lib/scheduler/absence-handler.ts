@@ -9,103 +9,117 @@ export async function handleDealerLeaving(
   schedule: ScheduleData,
   leavingDealerId: string,
   leaveAtTime: string,
-  dealers: DealerWithTables[],
+  dealers: DealerWithTables[], // Expects dealers to have available_tables as string[]
   shiftType: ShiftType,
   supabaseClient: SupabaseClient,
 ): Promise<ScheduleData> {
   try {
-    console.log("Starting handleDealerLeaving function")
-    console.log(`Dealer ${leavingDealerId} leaving at ${leaveAtTime}`)
+    console.log(
+      `[handleDealerLeaving] Start. Leaving Dealer: ${leavingDealerId}, Leave Time: ${leaveAtTime}, Total Dealers Provided: ${dealers.length}`,
+    )
 
-    // Получаваме времевите слотове за смяната
     const timeSlots = generateTimeSlots(shiftType)
-
-    // Намираме индекса на времето на напускане във времевите слотове
     const leaveTimeIndex = timeSlots.findIndex((slot) => slot.time === leaveAtTime)
 
     if (leaveTimeIndex === -1) {
-      console.error(`Leave time ${leaveAtTime} not found in time slots`)
+      console.error(`[handleDealerLeaving] Leave time ${leaveAtTime} not found in time slots.`)
       return schedule
     }
 
-    // Създаваме дълбоко копие на графика, с който да работим
     const updatedSchedule = JSON.parse(JSON.stringify(schedule))
+    // console.log("[handleDealerLeaving] Original schedule (deep copy):", JSON.stringify(updatedSchedule));
 
-    // Записваме оригиналния график за дебъгване
-    console.log("Original schedule:", JSON.stringify(schedule))
-
-    // Стъпка 1: Идентифицираме масите, назначени на напускащия дилър след времето на напускане
-    const tablesNeedingReassignment = new Map<string, string>() // timeSlot -> table
+    const tablesNeedingReassignment = new Map<string, string>()
 
     for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
       const currentSlot = timeSlots[i].time
-
-      // Проверяваме дали дилърът има назначение на маса (не BREAK)
       if (
-        updatedSchedule[currentSlot] &&
-        updatedSchedule[currentSlot][leavingDealerId] &&
+        updatedSchedule[currentSlot]?.[leavingDealerId] &&
         updatedSchedule[currentSlot][leavingDealerId] !== "BREAK"
       ) {
-        tablesNeedingReassignment.set(currentSlot, updatedSchedule[currentSlot][leavingDealerId])
-        console.log(`Table ${updatedSchedule[currentSlot][leavingDealerId]} needs reassignment at ${currentSlot}`)
+        const table = updatedSchedule[currentSlot][leavingDealerId]
+        tablesNeedingReassignment.set(currentSlot, table)
+        console.log(
+          `[handleDealerLeaving] Table ${table} needs reassignment at ${currentSlot} (was assigned to ${leavingDealerId})`,
+        )
       }
-
-      // Маркираме напускащия дилър като на BREAK
       if (updatedSchedule[currentSlot]) {
-        updatedSchedule[currentSlot][leavingDealerId] = "BREAK"
+        updatedSchedule[currentSlot][leavingDealerId] = "BREAK" // Mark leaving dealer as on break
       }
     }
 
-    // Ако няма маси, които се нуждаят от преназначаване, връщаме обновения график
     if (tablesNeedingReassignment.size === 0) {
-      console.log("No tables need reassignment, returning updated schedule")
+      console.log("[handleDealerLeaving] No tables need reassignment.")
       return updatedSchedule
     }
+    console.log(`[handleDealerLeaving] ${tablesNeedingReassignment.size} tables need reassignment.`)
 
-    // Стъпка 2: Получаваме останалите активни дилъри (без този, който е напуснал)
     const activeDealers = dealers.filter((dealer) => dealer.id !== leavingDealerId)
+    console.log(`[handleDealerLeaving] Number of active dealers (excluding leaving one): ${activeDealers.length}`)
 
-    // Стъпка 3: Преназначаваме масите за всеки времеви слот след напускането на дилъра
     for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
-      const currentSlot = timeSlots[i].time
-      const tableToReassign = tablesNeedingReassignment.get(currentSlot)
+      const currentSlotTime = timeSlots[i].time
+      const tableToReassign = tablesNeedingReassignment.get(currentSlotTime)
 
       if (!tableToReassign) continue
 
-      // Намираме подходящи дилъри, които могат да работят на тази маса и са в почивка
-      const availableDealers = activeDealers.filter(
-        (dealer) =>
-          dealer.available_tables.includes(tableToReassign) && updatedSchedule[currentSlot][dealer.id] === "BREAK",
+      console.log(`[handleDealerLeaving] Attempting to reassign table ${tableToReassign} at slot ${currentSlotTime}`)
+
+      const availableDealersForSlot = activeDealers.filter((dealer) => {
+        const isOnBreak = updatedSchedule[currentSlotTime]?.[dealer.id] === "BREAK"
+        const canWorkTable = Array.isArray(dealer.available_tables) && dealer.available_tables.includes(tableToReassign)
+        // Log individual dealer checks if needed for deep debugging:
+        // console.log(`[handleDealerLeaving] Checking dealer ${dealer.id} (${dealer.name}) for table ${tableToReassign} at ${currentSlotTime}: isOnBreak=${isOnBreak}, canWorkTable=${canWorkTable}`);
+        return isOnBreak && canWorkTable
+      })
+
+      console.log(
+        `[handleDealerLeaving] Found ${availableDealersForSlot.length} available dealers for table ${tableToReassign} at ${currentSlotTime}`,
       )
 
-      if (availableDealers.length > 0) {
-        // Намираме дилъра с най-малко натоварване
-        const dealerWorkloads = availableDealers.map((dealer) => {
+      if (availableDealersForSlot.length > 0) {
+        const dealerWorkloads = availableDealersForSlot.map((dealer) => {
           let workCount = 0
-          for (const slot in updatedSchedule) {
-            if (updatedSchedule[slot][dealer.id] && updatedSchedule[slot][dealer.id] !== "BREAK") {
+          for (const slotTimeKey in updatedSchedule) {
+            if (updatedSchedule[slotTimeKey]?.[dealer.id] && updatedSchedule[slotTimeKey][dealer.id] !== "BREAK") {
               workCount++
             }
           }
           return { dealer, workCount }
         })
 
-        // Сортираме по натоварване (възходящо)
         dealerWorkloads.sort((a, b) => a.workCount - b.workCount)
-
-        // Назначаваме масата на дилъра с най-малко натоварване
         const selectedDealer = dealerWorkloads[0].dealer
-        updatedSchedule[currentSlot][selectedDealer.id] = tableToReassign
-        console.log(`Assigned table ${tableToReassign} to dealer ${selectedDealer.name} at ${currentSlot}`)
+        updatedSchedule[currentSlotTime][selectedDealer.id] = tableToReassign
+        console.log(
+          `[handleDealerLeaving] Assigned table ${tableToReassign} to dealer ${selectedDealer.name} (ID: ${selectedDealer.id}) at ${currentSlotTime}`,
+        )
       } else {
-        // Ако няма дилър в почивка, намираме такъв, който може да бъде разменен
-        console.warn(`Could not find a dealer for table ${tableToReassign} at time ${currentSlot}`)
+        console.warn(
+          `[handleDealerLeaving] Could not find a suitable dealer (on break and qualified) for table ${tableToReassign} at time ${currentSlotTime}. Table remains unassigned by this process.`,
+        )
+        // Log details for why no dealer was found
+        activeDealers.forEach((dealer) => {
+          const isOnBreak = updatedSchedule[currentSlotTime]?.[dealer.id] === "BREAK"
+          const canWorkTable =
+            Array.isArray(dealer.available_tables) && dealer.available_tables.includes(tableToReassign)
+          if (!isOnBreak) {
+            console.log(
+              `[handleDealerLeaving] Dealer ${dealer.name} (ID: ${dealer.id}) is NOT on break at ${currentSlotTime}. Assignment: ${updatedSchedule[currentSlotTime]?.[dealer.id]}`,
+            )
+          }
+          if (!canWorkTable) {
+            console.log(
+              `[handleDealerLeaving] Dealer ${dealer.name} (ID: ${dealer.id}) CANNOT work table ${tableToReassign}. Available: ${JSON.stringify(dealer.available_tables)}`,
+            )
+          }
+        })
       }
     }
-
+    console.log("[handleDealerLeaving] Finished processing reassignments.")
     return updatedSchedule
   } catch (error) {
-    console.error("Error in handleDealerLeaving:", error)
-    return schedule // Връщаме оригиналния график в случай на грешка
+    console.error("[handleDealerLeaving] CRITICAL ERROR:", error)
+    return schedule // Return original schedule on critical error
   }
 }

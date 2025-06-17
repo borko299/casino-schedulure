@@ -5,9 +5,17 @@ export interface TimeSlot {
   formattedTime: string
 }
 
+export type FirstBreakReasonCode = "dealer_request" | "late_for_table" | "schedule_needs" | "other"
+export type LastBreakReasonCode = "personal_commitment" | "dealer_request" | "schedule_needs" | "other"
+
+export interface DealerBreakPreference {
+  dealerId: string
+  reason: FirstBreakReasonCode | LastBreakReasonCode
+}
+
 export interface SchedulePreferences {
-  firstBreakDealers?: string[]
-  lastBreakDealers?: string[]
+  firstBreakPreferences?: DealerBreakPreference[]
+  lastBreakPreferences?: DealerBreakPreference[]
 }
 
 export interface DealerAssignment {

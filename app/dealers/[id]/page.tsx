@@ -5,12 +5,15 @@ import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { ArrowLeft, Phone, Edit } from "lucide-react"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ArrowLeft, Phone, Edit, AlertTriangle, Eye } from "lucide-react"
 import Link from "next/link"
 import { toast } from "sonner"
 import { DealerStatsCard } from "@/components/dealer-stats-card"
+import { DealerFineStatsCard } from "@/components/dealer-fine-stats-card"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import type { Dealer, TableType } from "@/lib/types"
+import { INCIDENT_TYPES, SEVERITY_LEVELS, REPORT_STATUS } from "@/lib/incident-types"
+import type { Dealer, TableType, DealerReport } from "@/lib/types"
 import { supabase } from "@/lib/supabase-singleton"
 
 export default function DealerDetailPage({ params }: { params: { id: string } }) {
@@ -18,6 +21,7 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
   const [dealer, setDealer] = useState<Dealer | null>(null)
   const [dealerTableTypes, setDealerTableTypes] = useState<string[]>([])
   const [tableTypes, setTableTypes] = useState<TableType[]>([])
+  const [reports, setReports] = useState<DealerReport[]>([])
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -48,6 +52,16 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
 
         if (tableTypesError) throw tableTypesError
 
+        // Fetch dealer reports
+        const { data: reportsData, error: reportsError } = await supabase
+          .from("dealer_reports")
+          .select("*")
+          .eq("dealer_id", params.id)
+          .order("reported_at", { ascending: false })
+          .limit(10)
+
+        if (reportsError) throw reportsError
+
         setDealer(dealerData)
         setDealerTableTypes(permissionsData ? permissionsData.map((p) => p.table_type) : [])
         setTableTypes(
@@ -56,6 +70,7 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
             label: tt.label,
           })) || [],
         )
+        setReports(reportsData || [])
       } catch (error: any) {
         console.error("Error fetching dealer:", error)
         toast.error(`Грешка при зареждане на дилъра: ${error.message}`)
@@ -93,6 +108,21 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
     if (dealer?.phone) {
       window.open(`tel:${dealer.phone}`, "_self")
     }
+  }
+
+  const getSeverityBadge = (severity: string) => {
+    const level = SEVERITY_LEVELS.find((s) => s.value === severity)
+    return level ? <Badge className={level.color}>{level.label}</Badge> : <Badge>{severity}</Badge>
+  }
+
+  const getStatusBadge = (status: string) => {
+    const statusInfo = REPORT_STATUS.find((s) => s.value === status)
+    return statusInfo ? <Badge className={statusInfo.color}>{statusInfo.label}</Badge> : <Badge>{status}</Badge>
+  }
+
+  const getIncidentTypeLabel = (type: string) => {
+    const incidentType = INCIDENT_TYPES.find((t) => t.value === type)
+    return incidentType ? incidentType.label : type
   }
 
   if (isLoading) {
@@ -143,6 +173,12 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
             <Link href={`/dealers/${dealer.id}/edit`}>
               <Edit className="h-4 w-4 mr-2" />
               Редактирай
+            </Link>
+          </Button>
+          <Button variant="outline" asChild>
+            <Link href={`/reports/create?dealer=${dealer.id}`}>
+              <AlertTriangle className="h-4 w-4 mr-2" />
+              Нов репорт
             </Link>
           </Button>
           <DeleteConfirmationDialog itemName={dealer.name} onConfirm={handleDelete} />
@@ -208,7 +244,86 @@ export default function DealerDetailPage({ params }: { params: { id: string } })
       </Card>
 
       {/* Statistics */}
-      <DealerStatsCard dealer={dealer} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <DealerStatsCard dealer={dealer} />
+        <DealerFineStatsCard dealer={dealer} />
+      </div>
+
+      {/* Recent Reports */}
+      <Card>
+        <CardHeader>
+          <div className="flex justify-between items-center">
+            <div>
+              <CardTitle className="flex items-center">
+                <AlertTriangle className="h-5 w-5 mr-2 text-orange-500" />
+                Последни репорти
+              </CardTitle>
+              <CardDescription>Последните 10 репорта за този дилър</CardDescription>
+            </div>
+            <Button size="sm" asChild>
+              <Link href={`/reports?dealer=${dealer.id}`}>Виж всички</Link>
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {reports.length === 0 ? (
+            <div className="text-center py-8">
+              <AlertTriangle className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+              <p className="text-muted-foreground">Няма репорти за този дилър</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Дата</TableHead>
+                    <TableHead>Тип</TableHead>
+                    <TableHead>Тежест</TableHead>
+                    <TableHead>Статус</TableHead>
+                    <TableHead>Глоба</TableHead>
+                    <TableHead>Действия</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reports.map((report) => (
+                    <TableRow key={report.id}>
+                      <TableCell>{new Date(report.reported_at).toLocaleDateString("bg-BG")}</TableCell>
+                      <TableCell>{getIncidentTypeLabel(report.incident_type)}</TableCell>
+                      <TableCell>{getSeverityBadge(report.severity)}</TableCell>
+                      <TableCell>{getStatusBadge(report.status)}</TableCell>
+                      <TableCell>
+                        {report.fine_amount && report.fine_amount > 0 ? (
+                          <div className="flex items-center space-x-1">
+                            <span className="font-medium">{report.fine_amount.toFixed(2)} лв.</span>
+                            {report.fine_applied ? (
+                              <Badge variant="default" className="bg-green-500 text-xs">
+                                Приложена
+                              </Badge>
+                            ) : (
+                              <Badge variant="destructive" className="text-xs">
+                                Чака
+                              </Badge>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Button size="sm" variant="outline" asChild>
+                          <Link href={`/reports/${report.id}`}>
+                            <Eye className="h-4 w-4" />
+                          </Link>
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   )
 }

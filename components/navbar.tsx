@@ -4,114 +4,107 @@ import Link from "next/link"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Home, Users, Table, Database, Calendar, Menu, X } from "lucide-react"
-import { useState } from "react"
+import {
+  Calendar,
+  Users,
+  TableIcon,
+  BarChart3,
+  Settings,
+  AlertTriangle,
+  Plus,
+  DollarSign,
+  BarChart,
+} from "lucide-react"
+
+const navigation = [
+  { name: "Начало", href: "/", icon: BarChart3 },
+  { name: "Дилъри", href: "/dealers", icon: Users },
+  { name: "Маси", href: "/tables", icon: TableIcon },
+  { name: "Типове маси", href: "/table-types", icon: Settings },
+  { name: "Графици", href: "/schedules", icon: Calendar },
+  { name: "Репорти", href: "/reports", icon: AlertTriangle },
+  { name: "Глоби", href: "/fines", icon: DollarSign },
+  { name: "Статистики", href: "/statistics", icon: BarChart },
+]
 
 export function Navbar() {
   const pathname = usePathname()
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
-
-  const navItems = [
-    { href: "/", label: "Начало", icon: Home },
-    { href: "/dealers", label: "Дилъри", icon: Users },
-    { href: "/tables", label: "Маси", icon: Table },
-    { href: "/table-types", label: "Типове маси", icon: Database },
-    { href: "/schedules", label: "Графици", icon: Calendar },
-  ]
 
   return (
-    <header className="sticky top-0 z-50 w-full border-b bg-background shadow-sm">
-      <div className="container mx-auto flex h-16 items-center px-4">
-        {/* Logo */}
-        <Link href="/" className="flex items-center space-x-3 mr-8">
-          <div className="w-8 h-8 bg-primary rounded-md flex items-center justify-center">
-            <Calendar className="h-5 w-5 text-white" />
-          </div>
-          <div className="hidden sm:block">
-            <h1 className="font-bold text-xl">График CASINO</h1>
-            <p className="text-xs text-muted-foreground">Система за управление</p>
-          </div>
-        </Link>
-
-        {/* Desktop Navigation */}
-        <nav className="hidden md:flex items-center space-x-1 flex-1">
-          {navItems.map((item) => {
-            const Icon = item.icon
-            const isActive = pathname === item.href
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center space-x-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
-                  isActive
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                )}
-              >
-                <Icon className="h-4 w-4" />
-                <span>{item.label}</span>
+    <nav className="bg-white shadow-sm border-b">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div className="flex justify-between h-16">
+          <div className="flex">
+            <div className="flex-shrink-0 flex items-center">
+              <Link href="/" className="text-xl font-bold text-gray-900">
+                График CASINO
               </Link>
-            )
-          })}
-        </nav>
-
-        {/* Generate Schedule Button */}
-        <div className="hidden md:block ml-auto">
-          <Button asChild>
-            <Link href="/schedules/generate">
-              <Calendar className="h-4 w-4 mr-2" />
-              Генерирай график
-            </Link>
-          </Button>
-        </div>
-
-        {/* Mobile Menu Button */}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="md:hidden ml-auto"
-          onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-        >
-          {isMobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </Button>
-      </div>
-
-      {/* Mobile Navigation */}
-      {isMobileMenuOpen && (
-        <div className="md:hidden border-t bg-background">
-          <nav className="container mx-auto px-4 py-4 space-y-2">
-            {navItems.map((item) => {
-              const Icon = item.icon
-              const isActive = pathname === item.href
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    "flex items-center space-x-3 px-4 py-3 rounded-md text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                  )}
-                  onClick={() => setIsMobileMenuOpen(false)}
-                >
-                  <Icon className="h-5 w-5" />
-                  <span>{item.label}</span>
+            </div>
+            <div className="hidden sm:ml-6 sm:flex sm:space-x-8">
+              {navigation.map((item) => {
+                const Icon = item.icon
+                return (
+                  <Link
+                    key={item.name}
+                    href={item.href}
+                    className={cn(
+                      "inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium",
+                      pathname === item.href
+                        ? "border-blue-500 text-gray-900"
+                        : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700",
+                    )}
+                  >
+                    <Icon className="h-4 w-4 mr-2" />
+                    {item.name}
+                  </Link>
+                )
+              })}
+            </div>
+          </div>
+          <div className="flex items-center space-x-4">
+            {pathname === "/reports" && (
+              <Button asChild size="sm">
+                <Link href="/reports/create">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Нов репорт
                 </Link>
-              )
-            })}
-            <div className="pt-4 border-t">
-              <Button asChild className="w-full">
-                <Link href="/schedules/generate" onClick={() => setIsMobileMenuOpen(false)}>
-                  <Calendar className="h-4 w-4 mr-2" />
+              </Button>
+            )}
+            {pathname === "/schedules" && (
+              <Button asChild size="sm">
+                <Link href="/schedules/generate">
+                  <Plus className="h-4 w-4 mr-2" />
                   Генерирай график
                 </Link>
               </Button>
-            </div>
-          </nav>
+            )}
+            {pathname === "/dealers" && (
+              <Button asChild size="sm">
+                <Link href="/dealers/add">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Добави дилър
+                </Link>
+              </Button>
+            )}
+            {pathname === "/tables" && (
+              <Button asChild size="sm">
+                <Link href="/tables/add">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Добави маса
+                </Link>
+              </Button>
+            )}
+            {pathname === "/table-types" && (
+              <Button asChild size="sm">
+                <Link href="/table-types/add">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Добави тип
+                </Link>
+              </Button>
+            )}
+          </div>
         </div>
-      )}
-    </header>
+      </div>
+    </nav>
   )
 }

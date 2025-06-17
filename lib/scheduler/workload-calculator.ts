@@ -9,44 +9,81 @@ export async function getDealerAvailableTables(
   supabaseClient: SupabaseClient,
 ): Promise<string[]> {
   if (!dealer.id) {
-    console.error("Dealer ID is undefined, cannot fetch available tables.")
+    console.error(
+      `[getDealerAvailableTables] Dealer ID is undefined for dealer object: ${JSON.stringify(dealer)}. Cannot fetch available tables.`,
+    )
     return []
   }
+  console.log(`[getDealerAvailableTables] Fetching available tables for dealer: ${dealer.name} (ID: ${dealer.id})`)
 
-  const { data: permissions, error } = await supabaseClient
-    .from("dealer_table_permissions")
-    .select("table_types(name)")
-    .eq("dealer_id", dealer.id)
-    .eq("can_work", true)
+  try {
+    // 1. Получаваме разрешенията за типове маси на дилъра
+    const { data: permissions, error: permissionsError } = await supabaseClient
+      .from("dealer_table_types")
+      .select("table_type")
+      .eq("dealer_id", dealer.id)
 
-  if (error) {
-    console.error(`Error fetching table permissions for dealer ${dealer.name}:`, error)
-    return []
-  }
+    if (permissionsError) {
+      console.error(
+        `[getDealerAvailableTables] Error fetching permissions for dealer ${dealer.name} (ID: ${dealer.id}):`,
+        permissionsError,
+      )
+      return []
+    }
 
-  // Извличаме имената на типовете маси
-  const permittedTableTypes = permissions?.map((p: any) => p.table_types?.name).filter(Boolean) || []
+    if (!permissions || permissions.length === 0) {
+      console.log(
+        `[getDealerAvailableTables] No table type permissions found for dealer ${dealer.name} (ID: ${dealer.id}).`,
+      )
+      return []
+    }
 
-  // Извличаме всички маси, които съответстват на разрешените типове
-  if (permittedTableTypes.length === 0) {
-    return []
-  }
+    // 2. Извличаме имената на разрешените типове маси
+    const permittedTypes = permissions.map((p: any) => p.table_type).filter(Boolean)
 
-  const { data: tables, error: tablesError } = await supabaseClient
-    .from("tables")
-    .select("name")
-    .in(
-      "table_type_id",
-      (await supabaseClient.from("table_types").select("id").in("name", permittedTableTypes)).data?.map((t) => t.id) ||
-        [],
+    if (permittedTypes.length === 0) {
+      console.log(
+        `[getDealerAvailableTables] No valid table types extracted from permissions for dealer ${dealer.name} (ID: ${dealer.id}). Permissions data: ${JSON.stringify(permissions)}`,
+      )
+      return []
+    }
+
+    console.log(
+      `[getDealerAvailableTables] Dealer ${dealer.name} (ID: ${dealer.id}) has permissions for table types: ${permittedTypes.join(", ")}`,
     )
 
-  if (tablesError) {
-    console.error(`Error fetching tables for permitted types for dealer ${dealer.name}:`, tablesError)
+    // 3. Получаваме всички активни маси, които съответстват на разрешените типове
+    const { data: tables, error: tablesError } = await supabaseClient
+      .from("casino_tables")
+      .select("name")
+      .in("type", permittedTypes)
+      .eq("status", "active")
+
+    if (tablesError) {
+      console.error(
+        `[getDealerAvailableTables] Error fetching tables for permitted types for dealer ${dealer.name} (ID: ${dealer.id}):`,
+        tablesError,
+      )
+      return []
+    }
+
+    if (!tables || tables.length === 0) {
+      console.log(
+        `[getDealerAvailableTables] No active tables found for the permitted types for dealer ${dealer.name} (ID: ${dealer.id}). Permitted types: ${permittedTypes.join(", ")}`,
+      )
+      return []
+    }
+
+    const availableTableNames = tables.map((t: any) => t.name).filter(Boolean)
+    console.log(
+      `[getDealerAvailableTables] Dealer ${dealer.name} (ID: ${dealer.id}) can work on ${availableTableNames.length} tables: ${availableTableNames.join(", ")}`,
+    )
+
+    return availableTableNames
+  } catch (error) {
+    console.error(`[getDealerAvailableTables] Unexpected error for dealer ${dealer.name} (ID: ${dealer.id}):`, error)
     return []
   }
-
-  return tables?.map((t) => t.name) || []
 }
 
 /**
@@ -61,7 +98,10 @@ export function calculateScheduleParameters(
   const D = eligibleDealers.length
 
   if (D === 0 || T === 0) {
-    return { R, T, D, totalWorkSlots: 0, workSlotsPerDealer: 0, extraWorkSlots: 0, breakSlotsPerDealer: 0 }
+    console.warn(
+      `[calculateScheduleParameters] Cannot calculate parameters with D=${D} dealers or T=${T} tables. Returning zeroed parameters.`,
+    )
+    return { R, T, D, totalWorkSlots: 0, workSlotsPerDealer: 0, extraWorkSlots: 0, breakSlotsPerDealer: R }
   }
 
   // Общ брой работни слотове, които трябва да бъдат покрити
@@ -74,8 +114,11 @@ export function calculateScheduleParameters(
   const extraWorkSlots = totalWorkSlots % D
 
   // Базов брой почивки на дилър
-  // Всеки дилър има R слота общо. Ако работи workSlotsPerDealer, останалите са за почивка.
   const breakSlotsPerDealer = R - workSlotsPerDealer
+
+  console.log(
+    `[calculateScheduleParameters] R=${R}, T=${T}, D=${D}, totalWorkSlots=${totalWorkSlots}, workSlotsPerDealer=${workSlotsPerDealer}, extraWorkSlots=${extraWorkSlots}, breakSlotsPerDealer=${breakSlotsPerDealer}`,
+  )
 
   return {
     R,
@@ -96,10 +139,10 @@ export function initializeDealerAssignments(
   params: ScheduleParameters,
 ): Record<string, DealerAssignment> {
   const dealerAssignments: Record<string, DealerAssignment> = {}
+  console.log(`[initializeDealerAssignments] Initializing assignments for ${eligibleDealers.length} dealers.`)
 
   eligibleDealers.forEach((dealer, index) => {
     const targetRotations = params.workSlotsPerDealer + (index < params.extraWorkSlots ? 1 : 0)
-    // Целевият брой почивки е общият брой слотове минус целевите ротации
     const targetBreaks = params.R - targetRotations
 
     dealerAssignments[dealer.id] = {
@@ -115,6 +158,9 @@ export function initializeDealerAssignments(
       tablesInCurrentWorkSegment: new Set<string>(),
       isFirstWorkSegmentOfShift: true,
     }
+    console.log(
+      `[initializeDealerAssignments] Dealer ${dealer.name} (ID: ${dealer.id}): targetRotations=${targetRotations}, targetBreaks=${targetBreaks}`,
+    )
   })
   return dealerAssignments
 }

@@ -354,21 +354,44 @@ function fixConsecutiveBreaks(
       const currentSlotTime = timeSlots[i].time
 
       if (schedule[prevSlotTime][dealer.id] === "BREAK" && schedule[currentSlotTime][dealer.id] === "BREAK") {
-        console.log(`Fixing consecutive break for ${dealer.name} at ${timeSlots[i].formattedTime}`)
-        // Опит да се замени втората поредна почивка с работа
-        const tableToAssign = findSuitableTableForSlot(dealer, currentSlotTime, schedule, timeSlots, assignments)
-        if (tableToAssign) {
-          schedule[currentSlotTime][dealer.id] = tableToAssign
+        console.log(
+          `Consecutive break found for ${dealer.name} at ${timeSlots[i - 1].formattedTime} and ${timeSlots[i].formattedTime}. Attempting to fix.`,
+        )
+        let fixed = false
+
+        // Attempt 1: Replace the SECOND break with work
+        const tableForCurrentSlot = findSuitableTableForSlot(dealer, currentSlotTime, schedule, timeSlots, assignments)
+        if (tableForCurrentSlot) {
+          schedule[currentSlotTime][dealer.id] = tableForCurrentSlot
           assignments.rotations++
-          assignments.breaks--
-          assignments.assignedTables.add(tableToAssign)
-          // tablesInCurrentWorkSegment ще се обнови от основния цикъл
-          const bpIndex = assignments.breakPositions.indexOf(i)
+          assignments.breaks-- // Dealer has one less break overall
+          assignments.assignedTables.add(tableForCurrentSlot)
+          const bpIndex = assignments.breakPositions.indexOf(i) // Remove the second break's position
           if (bpIndex > -1) assignments.breakPositions.splice(bpIndex, 1)
-          console.log(`  Replaced consecutive break with ${tableToAssign}`)
-        } else {
-          console.warn(`  Could not find suitable table to fix consecutive break for ${dealer.name}`)
-          // Може да се опита преместване на една от почивките
+          console.log(`  Replaced second break at ${timeSlots[i].formattedTime} with ${tableForCurrentSlot}`)
+          fixed = true
+        }
+
+        // Attempt 2: If first attempt failed, replace the FIRST break with work
+        if (!fixed) {
+          const tableForPrevSlot = findSuitableTableForSlot(dealer, prevSlotTime, schedule, timeSlots, assignments)
+          if (tableForPrevSlot) {
+            schedule[prevSlotTime][dealer.id] = tableForPrevSlot
+            assignments.rotations++
+            assignments.breaks-- // Dealer has one less break overall
+            assignments.assignedTables.add(tableForPrevSlot)
+            const bpIndex = assignments.breakPositions.indexOf(i - 1) // Remove the first break's position
+            if (bpIndex > -1) assignments.breakPositions.splice(bpIndex, 1)
+            // The second break (at `i`) remains a break, but it's no longer consecutive with the (now work) slot at i-1.
+            console.log(`  Replaced first break at ${timeSlots[i - 1].formattedTime} with ${tableForPrevSlot}`)
+            fixed = true
+          }
+        }
+
+        if (!fixed) {
+          console.warn(
+            `  Could not find suitable table to fix consecutive break for ${dealer.name} at ${timeSlots[i - 1].formattedTime}/${timeSlots[i].formattedTime}. One break may need to be moved by redistribution.`,
+          )
         }
       }
     }
@@ -410,12 +433,13 @@ function validateAndFixMinTablesBeforeBreakRule(
           // Почивката следва работен период. Проверяваме правилото.
           const numUniqueTablesInSegment = assignments.tablesInCurrentWorkSegment.size
 
-          if (assignments.isFirstWorkSegmentOfShift) {
+          // НОВАТА ЛОГИКА ЗА ПРОВЕРКА, базирана на времевия прозорец
+          if (i < SCHEDULER_CONFIG.EARLY_BREAK_WINDOW_SLOTS) {
             if (numUniqueTablesInSegment < SCHEDULER_CONFIG.MIN_TABLES_FIRST_SEGMENT) {
               ruleViolated = true
               isCurrentBreakValid = false
               console.log(
-                `Rule Violation (First Segment): Dealer ${dealer.name} at ${
+                `Rule Violation (Early Window): Dealer ${dealer.name} at ${
                   timeSlots[i].formattedTime
                 }. Tables: ${numUniqueTablesInSegment}/${
                   SCHEDULER_CONFIG.MIN_TABLES_FIRST_SEGMENT
@@ -423,6 +447,7 @@ function validateAndFixMinTablesBeforeBreakRule(
               )
             }
           } else {
+            // След ранния прозорец
             if (numUniqueTablesInSegment < SCHEDULER_CONFIG.MIN_TABLES_REGULAR_SEGMENT) {
               ruleViolated = true
               isCurrentBreakValid = false

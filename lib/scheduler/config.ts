@@ -2,6 +2,9 @@
  * Конфигурация за алгоритъма за генериране на графици
  */
 export const SCHEDULER_CONFIG = {
+  // "Ранна зона" от началото на смяната, в която правилата са по-гъвкави
+  EARLY_BREAK_WINDOW_SLOTS: 4,
+
   // Минимален брой ротации преди почивка
   MIN_ROTATIONS_BEFORE_BREAK: 3,
 
@@ -27,8 +30,8 @@ export const SCHEDULER_CONFIG = {
   LARGE_DIFFERENCE_THRESHOLD: 2,
 
   // Минимален брой РАЗЛИЧНИ маси преди почивка
-  MIN_TABLES_FIRST_SEGMENT: 1, // За първия работен сегмент от смяната
-  MIN_TABLES_REGULAR_SEGMENT: 2, // За всички следващи работни сегменти
+  MIN_TABLES_FIRST_SEGMENT: 1, // Правило за почивки в "ранната зона"
+  MIN_TABLES_REGULAR_SEGMENT: 3, // По-строго правило за всички останали почивки
 
   // Тежести на различните нарушения
   WEIGHTS: {
