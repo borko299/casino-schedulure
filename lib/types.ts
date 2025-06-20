@@ -30,14 +30,14 @@ export type Schedule = {
   shift_type: "day" | "night"
   schedule_data: ScheduleData & {
     _preferences?: {
-      firstBreakPreferences?: DealerBreakPreference[] // Променено
-      lastBreakPreferences?: DealerBreakPreference[] // Променено
+      firstBreakPreferences?: DealerBreakPreference[]
+      lastBreakPreferences?: DealerBreakPreference[]
     }
   }
   absent_dealers?: {
     dealerId: string
     startTime: string
-    reason: string // Може да се типизира по-добре, ако имаме AbsenceReasonCode
+    reason: string
   }[]
   created_at: string
 }
@@ -64,6 +64,8 @@ export type TableTypeEntity = {
   id: string
   value: string
   label: string
+  color: string | null // Added color
+  text_color: string | null // Added text_color
   created_at: string
 }
 
@@ -88,6 +90,7 @@ export type DealerStats = {
 export type DealerReport = {
   id: string
   dealer_id: string
+  table_id?: string // Added for report statistics
   table_name?: string
   incident_type: string
   description: string
@@ -106,6 +109,7 @@ export type DealerReport = {
   created_at: string
   updated_at: string
   dealer?: Dealer
+  tables?: { name: string } // Added for report statistics
 }
 
 export type IncidentType = {

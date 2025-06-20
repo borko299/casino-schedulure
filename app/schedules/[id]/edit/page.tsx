@@ -787,58 +787,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                   </tbody>
                 </table>
               </div>
-              {(firstBreakPreferences.length > 0 || lastBreakPreferences.length > 0) && (
-                <div className="mt-6">
-                  <h3 className="text-lg font-medium mb-2">Предпочитания</h3>
-                  <div className="border rounded-md overflow-hidden">
-                    <table className="w-full">
-                      <thead className="bg-muted">
-                        <tr>
-                          <th className="p-2 text-left">Дилър</th>
-                          <th className="p-2 text-left">Тип почивка</th>
-                          <th className="p-2 text-left">Причина</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {firstBreakPreferences.map((pref) => {
-                          const dealer = dealers.find((d) => d.id === pref.dealerId)
-                          const reasonOption = firstBreakReasonOptions.find((opt) => opt.value === pref.reason)
-                          return (
-                            <tr key={`first-${pref.dealerId}`} className="border-t">
-                              <td className="p-2">
-                                {dealer
-                                  ? dealer.nickname
-                                    ? `${dealer.name} - ${dealer.nickname}`
-                                    : dealer.name
-                                  : "Unknown"}
-                              </td>
-                              <td className="p-2">Първа почивка</td>
-                              <td className="p-2">{reasonOption?.label || pref.reason}</td>
-                            </tr>
-                          )
-                        })}
-                        {lastBreakPreferences.map((pref) => {
-                          const dealer = dealers.find((d) => d.id === pref.dealerId)
-                          const reasonOption = lastBreakReasonOptions.find((opt) => opt.value === pref.reason)
-                          return (
-                            <tr key={`last-${pref.dealerId}`} className="border-t">
-                              <td className="p-2">
-                                {dealer
-                                  ? dealer.nickname
-                                    ? `${dealer.name} - ${dealer.nickname}`
-                                    : dealer.name
-                                  : "Unknown"}
-                              </td>
-                              <td className="p-2">Последна почивка</td>
-                              <td className="p-2">{reasonOption?.label || pref.reason}</td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
               {manualAdjustments.length > 0 && (
                 <div className="mt-6">
                   <h3 className="text-lg font-medium mb-2">Log of Manual Break Adjustments</h3>

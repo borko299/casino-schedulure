@@ -101,7 +101,24 @@ export function calculateScheduleParameters(
     console.warn(
       `[calculateScheduleParameters] Cannot calculate parameters with D=${D} dealers or T=${T} tables. Returning zeroed parameters.`,
     )
-    return { R, T, D, totalWorkSlots: 0, workSlotsPerDealer: 0, extraWorkSlots: 0, breakSlotsPerDealer: R }
+    return {
+      R,
+      T,
+      D,
+      totalWorkSlots: 0,
+      workSlotsPerDealer: 0,
+      extraWorkSlots: 0,
+      breakSlotsPerDealer: R,
+      dealersOnBreakCount: 0,
+    }
+  }
+
+  // Брой дилъри в почивка във всеки един момент
+  const dealersOnBreakCount = D - T
+  if (dealersOnBreakCount <= 0) {
+    console.warn(
+      `[calculateScheduleParameters] Number of dealers (${D}) is not greater than the number of tables (${T}). No breaks can be scheduled.`,
+    )
   }
 
   // Общ брой работни слотове, които трябва да бъдат покрити
@@ -117,7 +134,7 @@ export function calculateScheduleParameters(
   const breakSlotsPerDealer = R - workSlotsPerDealer
 
   console.log(
-    `[calculateScheduleParameters] R=${R}, T=${T}, D=${D}, totalWorkSlots=${totalWorkSlots}, workSlotsPerDealer=${workSlotsPerDealer}, extraWorkSlots=${extraWorkSlots}, breakSlotsPerDealer=${breakSlotsPerDealer}`,
+    `[calculateScheduleParameters] R=${R}, T=${T}, D=${D}, DealersOnBreak=${dealersOnBreakCount}, totalWorkSlots=${totalWorkSlots}, workSlotsPerDealer=${workSlotsPerDealer}, extraWorkSlots=${extraWorkSlots}, breakSlotsPerDealer=${breakSlotsPerDealer}`,
   )
 
   return {
@@ -128,6 +145,7 @@ export function calculateScheduleParameters(
     workSlotsPerDealer,
     extraWorkSlots,
     breakSlotsPerDealer,
+    dealersOnBreakCount: Math.max(0, dealersOnBreakCount), // Гарантираме, че не е отрицателно
   }
 }
 

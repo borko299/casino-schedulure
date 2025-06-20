@@ -1,3 +1,5 @@
+import type { Dealer } from "@/lib/types"
+
 export type ShiftType = "day" | "night"
 
 export interface TimeSlot {
@@ -5,29 +7,25 @@ export interface TimeSlot {
   formattedTime: string
 }
 
-export type FirstBreakReasonCode = "dealer_request" | "late_for_table" | "schedule_needs" | "other"
-export type LastBreakReasonCode = "personal_commitment" | "dealer_request" | "schedule_needs" | "other"
-
-export interface DealerBreakPreference {
-  dealerId: string
-  reason: FirstBreakReasonCode | LastBreakReasonCode
-}
-
 export interface SchedulePreferences {
-  firstBreakPreferences?: DealerBreakPreference[]
-  lastBreakPreferences?: DealerBreakPreference[]
+  firstBreakDealers?: string[]
+  lastBreakDealers?: string[]
 }
 
+// Променен DealerAssignment, за да поддържа новата логика
 export interface DealerAssignment {
-  rotations: number // Брой работни ротации
-  breaks: number // Брой почивки
-  lastTable: string // Последната маса, на която е работил дилърът
-  lastTableIndex: number // Индекс на последното назначение на маса
-  assignedTables: Set<string> // Маси, на които е работил дилърът
-  breakPositions: number[] // Позиции на почивките в графика
-  needsExtraRotation: boolean // Дали този дилър се нуждае от допълнителна ротация
-  targetRotations: number // Целеви брой ротации за този дилър
-  targetBreaks: number // Целеви брой почивки за този дилър
+  rotations: number
+  breaks: number
+  lastTable: string | null // Може да е null в началото
+  assignedTables: Set<string>
+  breakPositions: number[]
+  targetRotations: number
+  targetBreaks: number
+
+  // Нови полета за верижната ротация
+  slotsSinceLastBreak: number // Брояч на слотове от последната почивка
+  tableHistory: string[] // История на последните N маси
+  isReturningFromBreak: boolean // Дали дилърът се връща от почивка в текущия слот
 }
 
 export interface ScheduleData {
@@ -40,30 +38,19 @@ export interface ScheduleParameters {
   R: number // Брой ротации (24)
   T: number // Брой маси
   D: number // Брой дилъри
-  totalWorkSlots: number // Общ брой работни слотове
-  workSlotsPerDealer: number // Базов брой работни слотове на дилър
-  extraWorkSlots: number // Допълнителни работни слотове за разпределение
-  breakSlotsPerDealer: number // Базов брой почивки на дилър
+  totalWorkSlots: number
+  workSlotsPerDealer: number
+  extraWorkSlots: number
+  breakSlotsPerDealer: number
+  dealersOnBreakCount: number // Брой дилъри в почивка във всеки един момент
 }
 
-export interface DealerWithTables {
-  id: string
-  name: string
-  nickname: string
+export interface DealerWithTables extends Dealer {
   available_tables: string[]
-  created_at: string
 }
 
 export interface AbsenceInfo {
   dealerId: string
   startTime: string
   reason: string
-}
-
-export type Dealer = {
-  id: string
-  name: string
-  nickname: string
-  available_tables: string[]
-  created_at: string
 }

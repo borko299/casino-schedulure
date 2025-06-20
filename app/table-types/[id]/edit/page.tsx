@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
@@ -11,12 +10,15 @@ import { Label } from "@/components/ui/label"
 import { toast } from "sonner"
 import type { TableTypeEntity } from "@/lib/types"
 import { supabase } from "@/lib/supabase-singleton"
+import { Palette } from "lucide-react"
 
 export default function EditTableTypePage({ params }: { params: { id: string } }) {
   const router = useRouter()
   const [tableType, setTableType] = useState<TableTypeEntity | null>(null)
   const [label, setLabel] = useState("")
   const [value, setValue] = useState("")
+  const [color, setColor] = useState("#E5E7EB")
+  const [textColor, setTextColor] = useState("#1F2937")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
 
@@ -30,8 +32,10 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
         setTableType(data)
         setLabel(data.label)
         setValue(data.value)
+        setColor(data.color || "#E5E7EB")
+        setTextColor(data.text_color || "#1F2937")
       } catch (error: any) {
-        toast.error(`Error fetching table type: ${error.message}`)
+        toast.error(`Грешка при извличане на тип маса: ${error.message}`)
       } finally {
         setIsLoading(false)
       }
@@ -44,14 +48,13 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
     e.preventDefault()
 
     if (!label || !value) {
-      toast.error("Please fill in all fields")
+      toast.error("Моля, попълнете всички задължителни полета.")
       return
     }
 
     setIsSubmitting(true)
 
     try {
-      // Check if value already exists (excluding current record)
       const { data: existingType, error: checkError } = await supabase
         .from("table_types")
         .select("id")
@@ -64,20 +67,23 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
       }
 
       if (existingType) {
-        toast.error("A table type with this value already exists")
+        toast.error("Тип маса с такава системна стойност вече съществува.")
         setIsSubmitting(false)
         return
       }
 
-      const { error } = await supabase.from("table_types").update({ label, value }).eq("id", params.id)
+      const { error } = await supabase
+        .from("table_types")
+        .update({ label, value, color, text_color: textColor })
+        .eq("id", params.id)
 
       if (error) throw error
 
-      toast.success("Table type updated successfully")
+      toast.success("Типът маса е актуализиран успешно.")
       router.push("/table-types")
       router.refresh()
     } catch (error: any) {
-      toast.error(`Error updating table type: ${error.message}`)
+      toast.error(`Грешка при актуализиране на тип маса: ${error.message}`)
     } finally {
       setIsSubmitting(false)
     }
@@ -86,7 +92,7 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-64">
-        <p>Loading...</p>
+        <p>Зареждане...</p>
       </div>
     )
   }
@@ -94,7 +100,7 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
   if (!tableType) {
     return (
       <div className="flex justify-center items-center h-64">
-        <p>Table type not found</p>
+        <p>Типът маса не е намерен.</p>
       </div>
     )
   }
@@ -103,43 +109,89 @@ export default function EditTableTypePage({ params }: { params: { id: string } }
     <div className="max-w-2xl mx-auto">
       <Card>
         <CardHeader>
-          <CardTitle>Edit Table Type</CardTitle>
-          <CardDescription>Update the table type information</CardDescription>
+          <CardTitle className="flex items-center">
+            <Palette className="mr-2 h-6 w-6" /> Редактиране на тип маса
+          </CardTitle>
+          <CardDescription>Актуализирайте информацията и цветовете за типа маса.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-6">
             <div className="space-y-2">
-              <Label htmlFor="label">Display Name</Label>
+              <Label htmlFor="label">Име за показване</Label>
               <Input
                 id="label"
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="Enter display name (e.g., Poker Texas Hold'em)"
+                placeholder="Въведете име (напр. Poker Texas Hold'em)"
                 required
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="value">System Value</Label>
+              <Label htmlFor="value">Системна стойност</Label>
               <Input
                 id="value"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
-                placeholder="System identifier (e.g., poker_texas_holdem)"
+                placeholder="Системен идентификатор (напр. poker_texas_holdem)"
                 required
                 className="font-mono"
               />
-              <p className="text-sm text-muted-foreground">
-                Warning: Changing the system value may affect existing tables and dealer permissions that use this type.
+              <p className="text-xs text-muted-foreground">
+                Внимание: Промяната на системната стойност може да засегне съществуващи маси и права на дилъри.
               </p>
             </div>
 
-            <div className="flex justify-end space-x-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="color">Цвят на фона</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="color"
+                    type="color"
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    className="w-16 h-10 p-1"
+                  />
+                  <Input
+                    type="text"
+                    value={color}
+                    onChange={(e) => setColor(e.target.value)}
+                    placeholder="#E5E7EB"
+                    className="font-mono flex-1"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="textColor">Цвят на текста</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="textColor"
+                    type="color"
+                    value={textColor}
+                    onChange={(e) => setTextColor(e.target.value)}
+                    className="w-16 h-10 p-1"
+                  />
+                  <Input
+                    type="text"
+                    value={textColor}
+                    onChange={(e) => setTextColor(e.target.value)}
+                    placeholder="#1F2937"
+                    className="font-mono flex-1"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="p-3 rounded-md text-center" style={{ backgroundColor: color, color: textColor }}>
+              Примерен изглед
+            </div>
+
+            <div className="flex justify-end space-x-2 pt-4">
               <Button type="button" variant="outline" onClick={() => router.back()} disabled={isSubmitting}>
-                Cancel
+                Отказ
               </Button>
               <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting ? "Saving..." : "Save Changes"}
+                {isSubmitting ? "Запазване..." : "Запази промените"}
               </Button>
             </div>
           </form>
