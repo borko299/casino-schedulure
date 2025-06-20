@@ -7,19 +7,13 @@ import type {
   SchedulePreferences,
 } from "./types"
 import { initializeDealerState, updateDealerStateForSlot } from "./dealer-state"
+// import { timeSlots } from "./some-module" // Declare or import the timeSlots variable
 
-// Променени тежести за приоритет за почивка
 const BREAK_PRIORITY_WEIGHTS = {
-  SLOTS_SINCE_LAST_BREAK: 25, // Увеличена тежест
-  BREAK_DEFICIT: 10, // Намалена тежест
-  RANDOM_FACTOR_RANGE: 3, // Намален диапазон за случайност
-  OPTIMAL_SLOTS_BONUS: 5, // Бонус ако е работил оптимален брой слотове
+  SLOTS_SINCE_LAST_BREAK: 10,
+  BREAK_DEFICIT: 20, // По-голяма тежест за тези, които изостават с почивките
+  RANDOM_FACTOR_RANGE: 5, // Малък диапазон за разбъркване
 }
-
-// Приблизителен оптимален брой слотове работа преди почивка
-// Може да се изчисли по-динамично на база params, ако е нужно
-const OPTIMAL_WORK_SLOTS_MIN = 2
-const OPTIMAL_WORK_SLOTS_MAX = 3
 
 /**
  * Основна функция, която имплементира новата логика с верижна ротация.
@@ -52,7 +46,7 @@ export function generateChainRotationSchedule(
       timeSlots,
     )
   }
-  // console.log("Final Dealer States:", JSON.parse(JSON.stringify(dealerState)));
+
   return schedule
 }
 
@@ -70,88 +64,57 @@ function initializeFirstSlot(
 ) {
   const slotAssignments: Record<string, string> = {}
   const dealersToAssign = [...dealers]
-  // const tablesToCover = [...tables] // Не се използва директно по този начин вече
+  const tablesToCover = [...tables]
 
   // 1. Определяме кои дилъри ще почиват първи
-  const dealersGoingOnBreakCount = params.dealersOnBreakCount
   const dealersOnBreak: DealerWithTables[] = []
   const preferredFirstBreak = preferences?.firstBreakDealers || []
 
+  // Добавяме тези с предпочитания
   preferredFirstBreak.forEach((dealerId) => {
     const dealer = dealers.find((d) => d.id === dealerId)
-    if (dealer && dealersOnBreak.length < dealersGoingOnBreakCount) {
+    if (dealer && dealersOnBreak.length < params.dealersOnBreakCount) {
       dealersOnBreak.push(dealer)
     }
   })
 
-  const remainingCandidatesForBreak = dealers.filter((d) => !dealersOnBreak.find((db) => db.id === d.id))
-  remainingCandidatesForBreak.sort(
-    (a, b) => calculateBreakPriority(b, state, params, 0) - calculateBreakPriority(a, state, params, 0),
+  // Допълваме до нужния брой почиващи, използвайки приоритет
+  const remainingCandidates = dealers.filter((d) => !dealersOnBreak.find((db) => db.id === d.id))
+  remainingCandidates.sort(
+    (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
   )
 
   let i = 0
-  while (dealersOnBreak.length < dealersGoingOnBreakCount && i < remainingCandidatesForBreak.length) {
-    dealersOnBreak.push(remainingCandidatesForBreak[i])
+  while (dealersOnBreak.length < params.dealersOnBreakCount && i < remainingCandidates.length) {
+    dealersOnBreak.push(remainingCandidates[i])
     i++
   }
 
-  // Ако няма достатъчно дилъри за всички маси + почивки, намаляваме броя на почиващите
-  const workingDealerCount = dealers.length - dealersOnBreak.length
-  if (workingDealerCount < tables.length && dealersOnBreak.length > 0) {
-    const neededReduction = tables.length - workingDealerCount
-    const actualReduction = Math.min(neededReduction, dealersOnBreak.length)
-    // Премахваме дилъри от почивка, започвайки от тези с най-нисък приоритет за почивка (последните добавени)
-    for (let k = 0; k < actualReduction; k++) {
-      dealersOnBreak.pop()
-    }
-  }
-
+  // 2. Назначаваме почивките
   dealersOnBreak.forEach((dealer) => {
     slotAssignments[dealer.id] = "BREAK"
-    // updateDealerStateForSlot(dealer.id, "BREAK", 0, state) // Ще се актуализира накрая за всички
+    updateDealerStateForSlot(dealer.id, "BREAK", 0, state)
   })
 
   // 3. Назначаваме останалите на маси
   const workingDealers = dealers.filter((d) => !slotAssignments[d.id])
   const availableTablesForFirstSlot = new Set(tables)
 
-  // Разбъркваме работещите дилъри за по-голямо разнообразие при първоначалното разпределение
-  for (let k = workingDealers.length - 1; k > 0; k--) {
-    const l = Math.floor(Math.random() * (k + 1))
-    ;[workingDealers[k], workingDealers[l]] = [workingDealers[l], workingDealers[k]]
-  }
-
   workingDealers.forEach((dealer) => {
-    if (availableTablesForFirstSlot.size === 0) {
-      // console.warn(`No tables left for dealer ${dealer.name} in first slot. Assigning BREAK.`);
-      slotAssignments[dealer.id] = "BREAK" // Ако няма свободни маси, почива
-      return
-    }
-    const targetTable = findBestTableForDealer(dealer, availableTablesForFirstSlot, state, null, tables)
+    const targetTable = findBestTableForDealer(dealer, availableTablesForFirstSlot, state, null) // null за previousAssignments, тъй като е първи слот
     if (targetTable) {
       slotAssignments[dealer.id] = targetTable
       availableTablesForFirstSlot.delete(targetTable)
+      updateDealerStateForSlot(dealer.id, targetTable, 0, state)
+    } else if (tablesToCover.length > 0) {
+      // Fallback, ако findBestTableForDealer не върне нищо (не би трябвало)
+      const table = tablesToCover.shift()!
+      slotAssignments[dealer.id] = table
+      updateDealerStateForSlot(dealer.id, table, 0, state)
     } else {
-      // Fallback: ако findBestTableForDealer не върне нищо (не би трябвало при налични маси)
-      // Това може да се случи, ако всички налични маси са недопустими за дилъра
-      // console.warn(`Could not find optimal table for ${dealer.name} in first slot. Assigning first available or BREAK.`);
-      const firstAvailable = Array.from(availableTablesForFirstSlot)[0]
-      if (firstAvailable && dealer.available_tables?.includes(firstAvailable)) {
-        slotAssignments[dealer.id] = firstAvailable
-        availableTablesForFirstSlot.delete(firstAvailable)
-      } else {
-        slotAssignments[dealer.id] = "BREAK" // Ако няма подходящи маси, почива
-      }
+      slotAssignments[dealer.id] = "BREAK" // Ако няма маси, почива
+      updateDealerStateForSlot(dealer.id, "BREAK", 0, state)
     }
-  })
-
-  // Уверяваме се, че всички дилъри имат назначение
-  dealers.forEach((dealer) => {
-    if (!slotAssignments[dealer.id]) {
-      // console.log(`Dealer ${dealer.name} has no assignment in first slot. Assigning BREAK.`);
-      slotAssignments[dealer.id] = "BREAK"
-    }
-    updateDealerStateForSlot(dealer.id, slotAssignments[dealer.id], 0, state)
   })
 
   schedule[firstSlot.time] = slotAssignments
@@ -164,10 +127,9 @@ function calculateBreakPriority(
   dealer: DealerWithTables,
   state: Record<string, DealerAssignment>,
   params: ScheduleParameters,
-  currentSlotIndex: number, // Добавен за по-точни изчисления
 ): number {
   const dealerData = state[dealer.id]
-  if (!dealerData) return Number.NEGATIVE_INFINITY // Връщаме много ниска стойност, ако няма данни
+  if (!dealerData) return -1 // Не трябва да се случва
 
   const slotsSince = dealerData.slotsSinceLastBreak
   const breakDeficit = dealerData.targetBreaks - dealerData.breaks
@@ -175,22 +137,11 @@ function calculateBreakPriority(
 
   let score = 0
   score += slotsSince * BREAK_PRIORITY_WEIGHTS.SLOTS_SINCE_LAST_BREAK
+  score += Math.max(0, breakDeficit) * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT // Само положителен дефицит (т.е. изоставане)
 
-  // Дефицитът има значение, но не толкова голямо, колкото времето от последна почивка
-  if (breakDeficit > 0) {
-    score += breakDeficit * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT
-  } else if (breakDeficit < 0) {
-    // Наказание за твърде много почивки
-    score += breakDeficit * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT * 1.5 // Леко увеличено наказание
-  }
-
-  // Бонус, ако е работил оптимален брой слотове
-  if (slotsSince >= OPTIMAL_WORK_SLOTS_MIN && slotsSince <= OPTIMAL_WORK_SLOTS_MAX) {
-    score += BREAK_PRIORITY_WEIGHTS.OPTIMAL_SLOTS_BONUS
-  }
-  // Допълнително силно увеличение на приоритета, ако е работил повече от максимално оптималните + 1
-  if (slotsSince > OPTIMAL_WORK_SLOTS_MAX + 1) {
-    score += BREAK_PRIORITY_WEIGHTS.SLOTS_SINCE_LAST_BREAK * 2 // Двоен бонус от основната тежест
+  // Ако дилърът е взел повече почивки от целевите, намаляваме приоритета му
+  if (breakDeficit < 0) {
+    score += breakDeficit * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT * 2 // Двойно наказание за излишък
   }
 
   score += randomFactor
@@ -212,43 +163,26 @@ function generateSlot(
 ) {
   const slotAssignments: Record<string, string> = {}
   const previousAssignments = schedule[previousSlot.time]
-  const currentSlotIndex = timeSlots.findIndex((ts) => ts.time === currentSlot.time)
 
   // 1. Determine who goes on a planned break
-  const dealersWorkingInPrevSlot = dealers.filter(
-    (d) =>
-      previousAssignments[d.id] &&
-      previousAssignments[d.id] !== "BREAK" &&
-      previousAssignments[d.id] !== "ERROR_NO_TABLES",
+  const potentialBreakCandidates = dealers.filter(
+    (d) => previousAssignments[d.id] && previousAssignments[d.id] !== "BREAK",
   )
-
-  dealersWorkingInPrevSlot.sort(
-    (a, b) =>
-      calculateBreakPriority(b, state, params, currentSlotIndex) -
-      calculateBreakPriority(a, state, params, currentSlotIndex),
+  potentialBreakCandidates.sort(
+    (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
   )
-
-  let numPlannedBreaks = params.dealersOnBreakCount
-  // Ако има по-малко работещи дилъри от броя на планираните почивки, намаляваме броя на почивките
-  if (dealersWorkingInPrevSlot.length < numPlannedBreaks) {
-    numPlannedBreaks = dealersWorkingInPrevSlot.length
-  }
-
-  const dealersGoingToPlannedBreak = dealersWorkingInPrevSlot.slice(0, numPlannedBreaks)
+  const dealersGoingToPlannedBreak = potentialBreakCandidates.slice(0, params.dealersOnBreakCount)
 
   dealersGoingToPlannedBreak.forEach((dealer) => {
     slotAssignments[dealer.id] = "BREAK"
   })
 
   // 2. Identify dealers who will be active (either returning or continuing)
-  const returningDealers = dealers.filter(
-    (d) => previousAssignments[d.id] === "BREAK" || previousAssignments[d.id] === "ERROR_NO_TABLES",
-  )
+  const returningDealers = dealers.filter((d) => previousAssignments[d.id] === "BREAK")
   const continuingDealers = dealers.filter(
     (d) =>
       previousAssignments[d.id] &&
       previousAssignments[d.id] !== "BREAK" &&
-      previousAssignments[d.id] !== "ERROR_NO_TABLES" &&
       !dealersGoingToPlannedBreak.find((bDealer) => bDealer.id === d.id),
   )
 
@@ -263,27 +197,29 @@ function generateSlot(
 
   // 3. Determine who actually works on tables vs. takes additional breaks if not enough tables
   const availableTablesForSlot = new Set(tables)
-  let dealersWhoWillWorkOnTables: DealerWithTables[] = []
+  const dealersWhoWillWorkOnTables: DealerWithTables[] = []
   const dealersGoingToAdditionalBreak: DealerWithTables[] = []
 
   if (potentiallyActiveDealers.length <= tables.length) {
     dealersWhoWillWorkOnTables.push(...potentiallyActiveDealers)
   } else {
+    // More potentially active dealers than tables. Some must take an additional break.
+    // Sort by break priority: those with higher priority take the additional break.
     const sortedActiveDealers = [...potentiallyActiveDealers].sort(
-      (a, b) =>
-        calculateBreakPriority(b, state, params, currentSlotIndex) -
-        calculateBreakPriority(a, state, params, currentSlotIndex), // Сортираме така, че тези с по-висок приоритет за почивка да са първи
+      (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
     )
-    // Тези с най-висок приоритет за почивка отиват на допълнителна почивка
-    const numAdditionalBreaks = potentiallyActiveDealers.length - tables.length
-    for (let k = 0; k < numAdditionalBreaks; k++) {
-      if (sortedActiveDealers[k]) {
-        // Проверка дали съществува
-        dealersGoingToAdditionalBreak.push(sortedActiveDealers[k])
+
+    const numToWork = tables.length
+
+    for (let i = 0; i < sortedActiveDealers.length; i++) {
+      if (dealersWhoWillWorkOnTables.length < numToWork) {
+        dealersWhoWillWorkOnTables.push(sortedActiveDealers[i])
+      } else {
+        dealersGoingToAdditionalBreak.push(sortedActiveDealers[i])
       }
     }
-    // Останалите работят
-    dealersWhoWillWorkOnTables = sortedActiveDealers.slice(numAdditionalBreaks)
+    // Re-sort dealersWhoWillWorkOnTables to a more natural order if needed, e.g., by name or original order
+    // For now, the order from sort (lowest break priority first) is fine.
   }
 
   dealersGoingToAdditionalBreak.forEach((dealer) => {
@@ -291,174 +227,156 @@ function generateSlot(
   })
 
   // 4. Assign tables to dealersWhoWillWorkOnTables
-  // Разбъркваме continuing дилърите, за да разнообразим реда на избор на маса
-  const returningToWorkThisSlot = dealersWhoWillWorkOnTables.filter((d) => state[d.id]?.isReturningFromBreak)
-  const continuingToWorkThisSlot = dealersWhoWillWorkOnTables.filter((d) => !state[d.id]?.isReturningFromBreak)
+  // Optional: Sort dealersWhoWillWorkOnTables, e.g., to prioritize returning dealers for table choice,
+  // or maintain a consistent order. For now, using the order determined above.
+  // Example: prioritize returning dealers
+  dealersWhoWillWorkOnTables.sort((a, b) => {
+    const aIsReturning = returningDealers.some((rd) => rd.id === a.id)
+    const bIsReturning = returningDealers.some((rd) => rd.id === b.id)
+    if (aIsReturning && !bIsReturning) return -1
+    if (!aIsReturning && bIsReturning) return 1
+    // Could add secondary sort, e.g. by name for consistency if priorities are equal
+    // return a.name.localeCompare(b.name);
+    return 0
+  })
 
-  for (let k = continuingToWorkThisSlot.length - 1; k > 0; k--) {
-    const l = Math.floor(Math.random() * (k + 1))
-    ;[continuingToWorkThisSlot[k], continuingToWorkThisSlot[l]] = [
-      continuingToWorkThisSlot[l],
-      continuingToWorkThisSlot[k],
-    ]
+  // В функцията generateSlot, преди цикъла за назначаване на маси на dealersWhoWillWorkOnTables:
+
+  // Пример за разбъркване на реда на dealersWhoWillWorkOnTables,
+  // но запазване на приоритета на връщащите се от почивка да са в началото, ако има такива.
+  const finalWorkersForTableAssignment = [...dealersWhoWillWorkOnTables]
+  // Разделяме на връщащи се и продължаващи
+  const returningToWork = finalWorkersForTableAssignment.filter((d) => state[d.id]?.isReturningFromBreak)
+  const continuingToWork = finalWorkersForTableAssignment.filter((d) => !state[d.id]?.isReturningFromBreak)
+
+  // Разбъркваме продължаващите
+  for (let i = continuingToWork.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[continuingToWork[i], continuingToWork[j]] = [continuingToWork[j], continuingToWork[i]]
   }
-  // Връщащите се от почивка обикновено имат приоритет или поне са отделна група при избора
-  const finalWorkersForTableAssignment = [...returningToWorkThisSlot, ...continuingToWorkThisSlot]
+  // Събираме ги отново, като връщащите се са първи (за да имат по-добър избор, ако това е желано)
+  const shuffledWorkers = [...returningToWork, ...continuingToWork]
 
-  finalWorkersForTableAssignment.forEach((dealer) => {
-    if (slotAssignments[dealer.id] === "BREAK") return // Вече е назначен за почивка
+  // След това използвайте shuffledWorkers в цикъла:
+  // shuffledWorkers.forEach((dealer) => { ... });
+  // Вместо:
+  // dealersWhoWillWorkOnTables.forEach((dealer) => { ... });
+  // Не забравяйте да замените dealersWhoWillWorkOnTables със shuffledWorkers в цикъла.
 
-    if (availableTablesForSlot.size === 0) {
-      // console.warn(`No tables left for dealer ${dealer.name} in slot ${currentSlot.formattedTime} during assignment. Assigning BREAK.`);
-      slotAssignments[dealer.id] = "BREAK" // Ако няма свободни маси, почива
-      return
-    }
+  const assignmentSource = shuffledWorkers
 
-    const targetTable = findBestTableForDealer(dealer, availableTablesForSlot, state, previousAssignments, tables)
+  assignmentSource.forEach((dealer) => {
+    // Ensure dealer is not already assigned a break (should be covered by logic above)
+    if (slotAssignments[dealer.id] === "BREAK") return
+
+    const targetTable = findBestTableForDealer(dealer, availableTablesForSlot, state, previousAssignments)
+
     if (targetTable) {
       slotAssignments[dealer.id] = targetTable
       availableTablesForSlot.delete(targetTable)
     } else {
-      //   console.error(
-      //     `CRITICAL: No suitable table found for dealer ${dealer.name} (ID: ${dealer.id}) in slot ${currentSlot.formattedTime}. Available: ${availableTablesForSlot.size}. Assigning ERROR_NO_TABLES.`,
-      //   )
-      slotAssignments[dealer.id] = "ERROR_NO_TABLES" // По-ясно име за грешка
+      console.error(
+        `CRITICAL: No suitable table found for dealer ${dealer.name} (ID: ${dealer.id}) in slot ${currentSlot.formattedTime}, even with fallbacks. Available tables count: ${availableTablesForSlot.size}. This indicates a potential issue in table availability or selection logic. Assigning ERROR_NO_TABLES.`,
+      )
+      slotAssignments[dealer.id] = "ERROR_NO_TABLES"
     }
   })
 
   // 5. Finalize assignments for the slot and update dealer states
+  schedule[currentSlot.time] = slotAssignments
+  const currentSlotIndex = timeSlots.findIndex((ts) => ts.time === currentSlot.time)
+
   dealers.forEach((dealer) => {
     const assignment = slotAssignments[dealer.id]
     if (assignment) {
-      // updateDealerStateForSlot(dealer.id, assignment, currentSlotIndex, state) // Ще се актуализира по-долу
+      updateDealerStateForSlot(dealer.id, assignment, currentSlotIndex, state)
     } else {
-      // Този дилър не е получил назначение (не е планирана почивка, не е допълнителна, не е маса)
-      // Това означава, че е "излишен" за този слот. Третираме го като почивка.
-      //   if (previousAssignments[dealer.id] !== undefined) { // Само ако е бил в предния слот
-      //     console.warn(
-      //       `Dealer ${dealer.name} (ID: ${dealer.id}) was not assigned in slot ${currentSlot.formattedTime}. Treating as BREAK.`,
-      //     )
-      //   }
-      slotAssignments[dealer.id] = "BREAK" // Гарантираме, че има назначение
+      // This dealer was not assigned anything: not a planned break, not an additional break, not a table.
+      // This implies they are surplus for this slot (e.g., total dealers > tables + planned breaks + additional breaks).
+      // Treat them as being on break for state tracking.
+      if (previousAssignments[dealer.id] !== undefined) {
+        // Only log if they were present in the previous slot
+        console.warn(
+          `Dealer ${dealer.name} (ID: ${dealer.id}) was not assigned in slot ${currentSlot.formattedTime} and was present previously. Treating as BREAK for state.`,
+        )
+      }
+      updateDealerStateForSlot(dealer.id, "BREAK", currentSlotIndex, state)
+      schedule[currentSlot.time][dealer.id] = "BREAK" // Ensure they are marked as BREAK in schedule data
     }
-    updateDealerStateForSlot(dealer.id, slotAssignments[dealer.id], currentSlotIndex, state)
   })
-  schedule[currentSlot.time] = slotAssignments
 }
 
 /**
- * Намира най-добрата маса за дилър.
+ * Намира най-добрата маса за дилър по принципа "най-отдавна неработена" и избягване на скорошни.
  */
 function findBestTableForDealer(
   dealer: DealerWithTables,
   availableTables: Set<string>,
   state: Record<string, DealerAssignment>,
-  previousAssignments: Record<string, string> | null,
-  allCasinoTables: string[], // Добавяме всички маси в казиното за проверка на типове
+  previousAssignments: Record<string, string> | null, // Назначенията от предходния слот
 ): string | null {
   const dealerState = state[dealer.id]
-  if (!dealerState) return null // Предпазна проверка
-
-  const tableWorkedInPrevSlotByDealer = previousAssignments ? previousAssignments[dealer.id] : null
+  const lastWorkedTableByDealer = dealerState.lastTable // Последната маса, на която ТОЗИ дилър е работил (може да е от преди няколко слота, ако е бил в почивка)
+  const tableWorkedInPrevSlotByDealer = previousAssignments ? previousAssignments[dealer.id] : null // Масата, на която е бил в ПРЕДНИЯ слот
 
   const scoredTables: { table: string; score: number }[] = []
 
-  // Филтрираме наличните маси само до тези, на които дилърът може да работи
-  const permissibleTables = Array.from(availableTables).filter((t) => dealer.available_tables?.includes(t))
-  if (permissibleTables.length === 0) {
-    // console.log(`Dealer ${dealer.name} has no permissible tables among available: ${Array.from(availableTables).join(', ')}`);
-    return null // Няма налични маси, на които дилърът може да работи
-  }
-
-  for (const table of permissibleTables) {
+  for (const table of availableTables) {
+    // Абсолютно правило: НЕ може да е същата маса като в ПРЕДНИЯ слот, ако е работил тогава
     if (
       tableWorkedInPrevSlotByDealer &&
       table === tableWorkedInPrevSlotByDealer &&
-      tableWorkedInPrevSlotByDealer !== "BREAK" &&
-      tableWorkedInPrevSlotByDealer !== "ERROR_NO_TABLES"
+      tableWorkedInPrevSlotByDealer !== "BREAK"
     ) {
-      continue
+      continue // Пропускаме тази маса
     }
 
-    let score = 1000
+    let score = 1000 // Базова висока оценка
 
     // Наказание за скорошно работени маси от историята
     dealerState.tableHistory.forEach((historicalTable, index) => {
       if (table === historicalTable) {
-        score -= 450 / (index + 1) // Увеличено наказание
+        // Увеличете базовото наказание или променете начина, по който намалява с индекса
+        score -= 400 / (index + 1) // Пример: увеличено базово наказание
+        // или score -= 500 * Math.pow(0.7, index) // Пример: по-рязко намаляващо наказание
       }
     })
 
-    // Бонус, ако масата не е в КРАТКАТА история (tableHistory)
-    if (!dealerState.tableHistory.includes(table)) {
-      score += 150 // Увеличен бонус
+    // Малък бонус, ако масата е от тип, на който дилърът може да работи, но не е в историята му скоро
+    if (!dealerState.tableHistory.includes(table) && dealer.available_tables?.includes(table)) {
+      // Добавена проверка дали дилърът по принцип може да работи на тази маса
+      score += 100 // Пример: увеличен бонус
     }
 
-    // Още по-голям бонус, ако масата не е работена ИЗОБЩО от този дилър през смяната (assignedTables)
-    if (!dealerState.assignedTables.has(table)) {
-      score += 250 // Силен бонус за напълно нова маса за смяната
+    // Добавете и бонус, ако масата не е била работена от ТОЗИ дилър изобщо през смяната (ако assignedTables не я съдържа)
+    if (!dealerState.assignedTables.has(table) && dealer.available_tables?.includes(table)) {
+      score += 150 // Допълнителен силен бонус за напълно нова маса за смяната
     }
 
-    // Бонус за смяна на тип маса (ако последната работена е била различен тип)
-    const lastTableType = dealerState.lastTable ? getTableTypePrefix(dealerState.lastTable, allCasinoTables) : null
-    const currentTableType = getTableTypePrefix(table, allCasinoTables)
-    if (lastTableType && currentTableType && lastTableType !== currentTableType) {
-      score += 75 // Бонус за разнообразие на типовете
+    // Бонус, ако масата е различна от последната работена от дилъра (lastTable)
+    if (lastWorkedTableByDealer && table !== lastWorkedTableByDealer) {
+      score += 20
     }
 
-    // Бонус, ако масата е различна от последната работена от дилъра (lastTable) - това е частично покрито от горното
-    if (dealerState.lastTable && table !== dealerState.lastTable) {
-      score += 30 // Малък допълнителен бонус
-    }
-
-    // Малък случаен фактор за разбиване на равенства
-    score += Math.floor(Math.random() * 10)
-
-    if (score > -500) {
-      // Позволяваме и леко отрицателни резултати, ако няма много избор
+    if (score > 0) {
+      // Добавяме само ако има положителен резултат след наказанията
       scoredTables.push({ table, score })
     }
   }
 
   if (scoredTables.length === 0) {
-    // Fallback: ако няма оценени маси (напр. всички са силно наказани или недопустими)
-    // Взимаме първата налична ДОПУСТИМА маса, която НЕ Е същата като в предния слот
-    const fallbackCandidates = permissibleTables.filter(
+    // Fallback: ако всички налични маси са силно наказани (напр. всички са били работени много скоро)
+    // Взимаме първата налична, която НЕ Е същата като в предния слот
+    const fallbackCandidates = Array.from(availableTables).filter(
       (t) =>
-        !(
-          tableWorkedInPrevSlotByDealer &&
-          t === tableWorkedInPrevSlotByDealer &&
-          tableWorkedInPrevSlotByDealer !== "BREAK" &&
-          tableWorkedInPrevSlotByDealer !== "ERROR_NO_TABLES"
-        ),
+        tableWorkedInPrevSlotByDealer &&
+        t !== tableWorkedInPrevSlotByDealer &&
+        tableWorkedInPrevSlotByDealer !== "BREAK",
     )
-    if (fallbackCandidates.length > 0) {
-      // console.log(`Dealer ${dealer.name} using fallback (non-previous): ${fallbackCandidates[0]}`);
-      return fallbackCandidates[0]
-    }
-    // Ако и това не успее, взимаме първата допустима, дори да е същата (много малко вероятно)
-    if (permissibleTables.length > 0) {
-      // console.log(`Dealer ${dealer.name} using fallback (first permissible): ${permissibleTables[0]}`);
-      return permissibleTables[0]
-    }
-    // console.log(`Dealer ${dealer.name} has NO permissible tables left for fallback.`);
-    return null // Абсолютен fallback - няма подходящи маси
+    if (fallbackCandidates.length > 0) return fallbackCandidates[0]
+    return Array.from(availableTables)[0] || null // Абсолютен fallback
   }
 
-  scoredTables.sort((a, b) => b.score - a.score)
-  //   if (dealer.name.includes("Aisyn")) { // Примерно логване за конкретен дилър
-  //       console.log(`Scores for ${dealer.name}:`, scoredTables.slice(0,5), `Chosen: ${scoredTables[0].table}`);
-  //   }
+  scoredTables.sort((a, b) => b.score - a.score) // Сортираме по най-висока оценка
   return scoredTables[0].table
-}
-
-// Помощна функция за определяне на типа на масата (BJ, ROU, OTHER)
-function getTableTypePrefix(tableName: string, allCasinoTables: string[]): string | null {
-  if (!tableName) return null
-  // Тук може да се добави по-сложна логика, ако имате дефинирани типове на масите
-  // Засега, проста проверка по префикс
-  if (tableName.toUpperCase().startsWith("BJ")) return "BJ"
-  if (tableName.toUpperCase().startsWith("ROU")) return "ROU"
-  // Може да се разшири с други типове, ако е необходимо
-  return "OTHER"
 }

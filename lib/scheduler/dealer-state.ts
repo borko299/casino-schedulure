@@ -1,7 +1,7 @@
 import type { DealerWithTables, DealerAssignment, ScheduleParameters } from "./types"
 
-// Увеличена дължина на историята на масите
-const TABLE_HISTORY_LENGTH = 8 // Беше 5
+// Променете TABLE_HISTORY_LENGTH
+const TABLE_HISTORY_LENGTH = 8 // Пример: увеличена дължина на историята
 
 /**
  * Инициализира структурите за проследяване на назначенията на дилърите за новия алгоритъм.
@@ -11,7 +11,7 @@ export function initializeDealerState(
   params: ScheduleParameters,
 ): Record<string, DealerAssignment> {
   const dealerState: Record<string, DealerAssignment> = {}
-  // console.log(`[initializeDealerState] Initializing state for ${eligibleDealers.length} dealers.`)
+  console.log(`[initializeDealerState] Initializing state for ${eligibleDealers.length} dealers.`)
 
   eligibleDealers.forEach((dealer, index) => {
     const targetRotations = params.workSlotsPerDealer + (index < params.extraWorkSlots ? 1 : 0)
@@ -21,13 +21,15 @@ export function initializeDealerState(
       rotations: 0,
       breaks: 0,
       lastTable: null,
-      assignedTables: new Set<string>(), // Следи всички уникални маси, работени през смяната
+      assignedTables: new Set<string>(),
       breakPositions: [],
       targetRotations: targetRotations,
       targetBreaks: targetBreaks,
       slotsSinceLastBreak: 0,
-      tableHistory: [], // Следи последните N работени маси
+      tableHistory: [],
       isReturningFromBreak: false,
+      // Добавяме поле за приоритет за почивка, ако решим да го изчисляваме и съхраняваме
+      // breakPriorityScore: 0, // Може да се изчислява on-the-fly
     }
   })
   return dealerState
@@ -47,18 +49,19 @@ export function updateDealerStateForSlot(
 
   dealer.isReturningFromBreak = false // Reset for next slot
 
-  if (assignment === "BREAK" || assignment === "ERROR_NO_TABLES") {
-    // Третираме грешката като почивка за състоянието
+  if (assignment === "BREAK") {
     dealer.breaks++
     dealer.slotsSinceLastBreak = 0
     dealer.breakPositions.push(slotIndex)
-    dealer.lastTable = null
+    dealer.lastTable = null // Няма последна маса, когато е в почивка
+    // Не добавяме "BREAK" към tableHistory
   } else {
     dealer.rotations++
     dealer.slotsSinceLastBreak++
     dealer.lastTable = assignment
-    dealer.assignedTables.add(assignment) // Добавяме към общия списък с работени маси
+    dealer.assignedTables.add(assignment)
 
+    // Актуализираме историята на масите
     dealer.tableHistory.unshift(assignment)
     if (dealer.tableHistory.length > TABLE_HISTORY_LENGTH) {
       dealer.tableHistory.pop()
