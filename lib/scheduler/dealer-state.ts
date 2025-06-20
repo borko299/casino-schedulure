@@ -1,7 +1,6 @@
 import type { DealerWithTables, DealerAssignment, ScheduleParameters } from "./types"
 
-// Променете TABLE_HISTORY_LENGTH
-const TABLE_HISTORY_LENGTH = 8 // Пример: увеличена дължина на историята
+const TABLE_HISTORY_LENGTH = 5 // Колко последни маси да помним
 
 /**
  * Инициализира структурите за проследяване на назначенията на дилърите за новия алгоритъм.

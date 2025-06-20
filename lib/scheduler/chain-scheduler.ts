@@ -240,32 +240,7 @@ function generateSlot(
     return 0
   })
 
-  // В функцията generateSlot, преди цикъла за назначаване на маси на dealersWhoWillWorkOnTables:
-
-  // Пример за разбъркване на реда на dealersWhoWillWorkOnTables,
-  // но запазване на приоритета на връщащите се от почивка да са в началото, ако има такива.
-  const finalWorkersForTableAssignment = [...dealersWhoWillWorkOnTables]
-  // Разделяме на връщащи се и продължаващи
-  const returningToWork = finalWorkersForTableAssignment.filter((d) => state[d.id]?.isReturningFromBreak)
-  const continuingToWork = finalWorkersForTableAssignment.filter((d) => !state[d.id]?.isReturningFromBreak)
-
-  // Разбъркваме продължаващите
-  for (let i = continuingToWork.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[continuingToWork[i], continuingToWork[j]] = [continuingToWork[j], continuingToWork[i]]
-  }
-  // Събираме ги отново, като връщащите се са първи (за да имат по-добър избор, ако това е желано)
-  const shuffledWorkers = [...returningToWork, ...continuingToWork]
-
-  // След това използвайте shuffledWorkers в цикъла:
-  // shuffledWorkers.forEach((dealer) => { ... });
-  // Вместо:
-  // dealersWhoWillWorkOnTables.forEach((dealer) => { ... });
-  // Не забравяйте да замените dealersWhoWillWorkOnTables със shuffledWorkers в цикъла.
-
-  const assignmentSource = shuffledWorkers
-
-  assignmentSource.forEach((dealer) => {
+  dealersWhoWillWorkOnTables.forEach((dealer) => {
     // Ensure dealer is not already assigned a break (should be covered by logic above)
     if (slotAssignments[dealer.id] === "BREAK") return
 
@@ -336,21 +311,13 @@ function findBestTableForDealer(
     // Наказание за скорошно работени маси от историята
     dealerState.tableHistory.forEach((historicalTable, index) => {
       if (table === historicalTable) {
-        // Увеличете базовото наказание или променете начина, по който намалява с индекса
-        score -= 400 / (index + 1) // Пример: увеличено базово наказание
-        // или score -= 500 * Math.pow(0.7, index) // Пример: по-рязко намаляващо наказание
+        score -= 200 / (index + 1) // По-голямо наказание за по-скорошни
       }
     })
 
     // Малък бонус, ако масата е от тип, на който дилърът може да работи, но не е в историята му скоро
-    if (!dealerState.tableHistory.includes(table) && dealer.available_tables?.includes(table)) {
-      // Добавена проверка дали дилърът по принцип може да работи на тази маса
-      score += 100 // Пример: увеличен бонус
-    }
-
-    // Добавете и бонус, ако масата не е била работена от ТОЗИ дилър изобщо през смяната (ако assignedTables не я съдържа)
-    if (!dealerState.assignedTables.has(table) && dealer.available_tables?.includes(table)) {
-      score += 150 // Допълнителен силен бонус за напълно нова маса за смяната
+    if (!dealerState.tableHistory.includes(table)) {
+      score += 50
     }
 
     // Бонус, ако масата е различна от последната работена от дилъра (lastTable)
