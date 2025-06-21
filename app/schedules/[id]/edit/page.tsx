@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { CalendarIcon, RefreshCw } from "lucide-react"
+import { CalendarIcon, AlertTriangle, CheckCircle } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -26,7 +26,6 @@ import type {
 } from "@/lib/types"
 import { supabase } from "@/lib/supabase-singleton"
 import { generateSchedule as generateScheduleAlgorithm } from "@/lib/schedule-generator"
-import { handleDealerLeaving } from "@/lib/utils" // Ще го използваме по-късно
 
 type AbsenceReasonUi = "sick" | "injured" | "unauthorized" | "voluntary" | "break"
 
@@ -34,6 +33,18 @@ interface AbsenceFormData {
   dealerId: string
   startTime: string
   reason: AbsenceReasonUi
+}
+
+interface ExtraBreakFormData {
+  dealerId: string
+  timeSlot: string
+  reason: string
+}
+
+interface DealerChangeFormData {
+  dealer1Id: string
+  dealer2Id: string
+  timeSlot: string
 }
 
 interface ManualAdjustment {
@@ -152,6 +163,18 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     reason: "sick",
   })
 
+  const [extraBreakForm, setExtraBreakForm] = useState<ExtraBreakFormData>({
+    dealerId: "",
+    timeSlot: "",
+    reason: "",
+  })
+
+  const [dealerChangeForm, setDealerChangeForm] = useState<DealerChangeFormData>({
+    dealer1Id: "",
+    dealer2Id: "",
+    timeSlot: "",
+  })
+
   const [absentDealers, setAbsentDealers] = useState<
     {
       dealerId: string
@@ -166,6 +189,28 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     startTime: string
     reason: AbsenceReasonUi
     scheduleData: ScheduleData
+  } | null>(null)
+
+  const [isPreviewingExtraBreak, setIsPreviewingExtraBreak] = useState(false)
+  const [extraBreakPreviewData, setExtraBreakPreviewData] = useState<{
+    dealerId: string
+    timeSlot: string
+    reason: string
+    scheduleData: ScheduleData
+    coveringDealer?: string
+    isValid: boolean
+    message: string
+  } | null>(null)
+
+  const [isPreviewingDealerChange, setIsPreviewingDealerChange] = useState(false)
+  const [dealerChangePreviewData, setDealerChangePreviewData] = useState<{
+    dealer1Id: string
+    dealer2Id: string
+    timeSlot: string
+    scheduleData: ScheduleData
+    isValid: boolean
+    message: string
+    warnings: string[]
   } | null>(null)
 
   const [originalDealerIds, setOriginalDealerIds] = useState<string[]>([])
@@ -536,39 +581,315 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     executeSave()
   }
 
+  const generatePartialSchedule = async (
+    dealers: Dealer[],
+    timeSlots: { time: string; formattedTime: string }[],
+    shiftType: "day" | "night",
+    preferences?: { firstBreakDealers: string[]; lastBreakDealers: string[] },
+  ): Promise<ScheduleData> => {
+    try {
+      // Create a temporary shift type that matches our partial time slots
+      // We'll use the existing algorithm but only take the slots we need
+      const fullSchedule = await generateScheduleAlgorithm(dealers, shiftType, supabase, preferences)
+
+      // Extract only the time slots we need
+      const partialSchedule: ScheduleData = {}
+      timeSlots.forEach((slot, index) => {
+        // Map our partial slots to the full schedule slots
+        const fullTimeSlots = generateTimeSlots(shiftType)
+        const correspondingFullSlot = fullTimeSlots[index]
+
+        if (correspondingFullSlot && fullSchedule[correspondingFullSlot.time]) {
+          partialSchedule[slot.time] = fullSchedule[correspondingFullSlot.time]
+        } else {
+          // Initialize empty slot if no corresponding slot found
+          partialSchedule[slot.time] = {}
+          dealers.forEach((dealer) => {
+            partialSchedule[slot.time][dealer.id] = "BREAK"
+          })
+        }
+      })
+
+      return partialSchedule
+    } catch (error) {
+      console.error("Error generating partial schedule:", error)
+      // Return empty schedule on error
+      const emptySchedule: ScheduleData = {}
+      timeSlots.forEach((slot) => {
+        emptySchedule[slot.time] = {}
+        dealers.forEach((dealer) => {
+          emptySchedule[slot.time][dealer.id] = "BREAK"
+        })
+      })
+      return emptySchedule
+    }
+  }
+
   const handleMarkAbsent = async () => {
     const { dealerId, startTime, reason } = absenceForm
     if (!dealerId || !startTime) {
       toast.error("Please select a dealer and start time")
       return
     }
+
     setIsPreviewingAbsence(true)
     try {
-      const activeDealersInCurrentSchedule = dealers
+      const timeSlots = generateTimeSlots(shiftType)
+      const leaveTimeIndex = timeSlots.findIndex((slot) => slot.time === startTime)
+
+      if (leaveTimeIndex === -1) {
+        toast.error("Invalid start time")
+        setIsPreviewingAbsence(false)
+        return
+      }
+
+      // Create a copy of current schedule data
+      const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
+
+      // Mark dealer as BREAK from the specified time onwards
+      for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
+        const currentSlot = timeSlots[i].time
+        if (updatedScheduleData[currentSlot]) {
+          updatedScheduleData[currentSlot][dealerId] = "BREAK"
+        }
+      }
+
+      // Get remaining active dealers (excluding the one leaving)
+      const remainingDealers = dealers
         .filter((d) => d.id !== dealerId && originalDealerIds.includes(d.id))
-        .map((d_1) => ({
-          ...d_1,
-          available_tables: Array.isArray(d_1.available_tables) ? d_1.available_tables : [],
+        .map((d) => ({
+          ...d,
+          available_tables: Array.isArray(d.available_tables) ? d.available_tables : [],
         })) as Dealer[]
 
-      const previewScheduleData = await handleDealerLeaving(
-        scheduleData, // Текущото scheduleData, което може да е модифицирано
-        dealerId,
-        startTime,
-        activeDealersInCurrentSchedule,
+      if (remainingDealers.length === 0) {
+        toast.error("No remaining dealers to cover the schedule")
+        setIsPreviewingAbsence(false)
+        return
+      }
+
+      // Generate new schedule for the remaining time slots using the normal algorithm
+      const remainingTimeSlots = timeSlots.slice(leaveTimeIndex)
+
+      // Create preferences for the partial schedule generation
+      const partialPreferences = {
+        firstBreakDealers: firstBreakPreferences
+          .filter((p) => remainingDealers.some((d) => d.id === p.dealerId))
+          .map((p) => p.dealerId),
+        lastBreakDealers: lastBreakPreferences
+          .filter((p) => remainingDealers.some((d) => d.id === p.dealerId))
+          .map((p) => p.dealerId),
+      }
+
+      // Generate new partial schedule from the leave time onwards
+      const partialScheduleData = await generateScheduleAlgorithm(
+        remainingDealers,
         shiftType,
         supabase,
+        partialPreferences,
       )
+
+      // Apply the new partial schedule to the remaining time slots
+      for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
+        const currentSlot = timeSlots[i].time
+        const partialSlotIndex = i - leaveTimeIndex
+        const partialSlotTime = remainingTimeSlots[partialSlotIndex]?.time
+
+        if (partialSlotTime && partialScheduleData[partialSlotTime]) {
+          // Copy assignments from partial schedule for remaining dealers
+          remainingDealers.forEach((dealer) => {
+            if (partialScheduleData[partialSlotTime][dealer.id]) {
+              updatedScheduleData[currentSlot][dealer.id] = partialScheduleData[partialSlotTime][dealer.id]
+            }
+          })
+        }
+      }
+
       setPreviewData({
         dealerId,
         startTime,
         reason,
-        scheduleData: previewScheduleData,
+        scheduleData: updatedScheduleData,
       })
     } catch (error: any) {
       console.error("Error generating preview:", error)
       toast.error(`Error generating preview: ${error.message}`)
       setIsPreviewingAbsence(false)
+    }
+  }
+
+  const handleExtraBreak = async () => {
+    const { dealerId, timeSlot, reason } = extraBreakForm
+    if (!dealerId || !timeSlot || !reason) {
+      toast.error("Please fill all fields")
+      return
+    }
+
+    setIsPreviewingExtraBreak(true)
+    try {
+      const timeSlots = generateTimeSlots(shiftType)
+      const dealer = dealers.find((d) => d.id === dealerId)
+      if (!dealer) {
+        toast.error("Dealer not found")
+        setIsPreviewingExtraBreak(false)
+        return
+      }
+
+      // Create a copy of current schedule data
+      const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
+
+      // Check if dealer is already on break at this time
+      const currentAssignment = updatedScheduleData[timeSlot]?.[dealerId]
+      if (currentAssignment === "BREAK") {
+        setExtraBreakPreviewData({
+          dealerId,
+          timeSlot,
+          reason,
+          scheduleData: updatedScheduleData,
+          isValid: false,
+          message: "Дилърът вече е на почивка в този слот.",
+        })
+        return
+      }
+
+      // Find who can cover this dealer's table
+      const tableToReplace = currentAssignment
+      if (!tableToReplace || tableToReplace === "-") {
+        setExtraBreakPreviewData({
+          dealerId,
+          timeSlot,
+          reason,
+          scheduleData: updatedScheduleData,
+          isValid: false,
+          message: "Дилърът не работи на маса в този слот.",
+        })
+        return
+      }
+
+      // Find available dealers who can work this table
+      const availableDealers = dealersToDisplayInTable.filter((d) => {
+        if (d.id === dealerId) return false
+        if (!d.available_tables.includes(tableToReplace)) return false
+        const theirAssignment = updatedScheduleData[timeSlot]?.[d.id]
+        return theirAssignment === "BREAK" || theirAssignment === "-"
+      })
+
+      if (availableDealers.length === 0) {
+        setExtraBreakPreviewData({
+          dealerId,
+          timeSlot,
+          reason,
+          scheduleData: updatedScheduleData,
+          isValid: false,
+          message: `Няма налични дилъри, които могат да поемат маса ${tableToReplace}.`,
+        })
+        return
+      }
+
+      // Choose the first available dealer (could be improved with better logic)
+      const coveringDealer = availableDealers[0]
+
+      // Apply the change
+      updatedScheduleData[timeSlot][dealerId] = "BREAK"
+      updatedScheduleData[timeSlot][coveringDealer.id] = tableToReplace
+
+      setExtraBreakPreviewData({
+        dealerId,
+        timeSlot,
+        reason,
+        scheduleData: updatedScheduleData,
+        coveringDealer: coveringDealer.name,
+        isValid: true,
+        message: `${coveringDealer.name} ще поеме маса ${tableToReplace}. ${dealer.name} ще навакса почивката.`,
+      })
+    } catch (error: any) {
+      console.error("Error generating extra break preview:", error)
+      toast.error(`Error generating preview: ${error.message}`)
+      setIsPreviewingExtraBreak(false)
+    }
+  }
+
+  const handleDealerChange = async () => {
+    const { dealer1Id, dealer2Id, timeSlot } = dealerChangeForm
+    if (!dealer1Id || !dealer2Id || !timeSlot) {
+      toast.error("Please fill all fields")
+      return
+    }
+
+    if (dealer1Id === dealer2Id) {
+      toast.error("Please select different dealers")
+      return
+    }
+
+    setIsPreviewingDealerChange(true)
+    try {
+      const dealer1 = dealers.find((d) => d.id === dealer1Id)
+      const dealer2 = dealers.find((d) => d.id === dealer2Id)
+      if (!dealer1 || !dealer2) {
+        toast.error("Dealers not found")
+        setIsPreviewingDealerChange(false)
+        return
+      }
+
+      // Create a copy of current schedule data
+      const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
+
+      const dealer1Assignment = updatedScheduleData[timeSlot]?.[dealer1Id]
+      const dealer2Assignment = updatedScheduleData[timeSlot]?.[dealer2Id]
+
+      const warnings: string[] = []
+      let isValid = true
+      let message = ""
+
+      // Check if both dealers are working (not on break)
+      if (dealer1Assignment === "BREAK") {
+        warnings.push(`${dealer1.name} е на почивка в този слот`)
+        isValid = false
+      }
+      if (dealer2Assignment === "BREAK") {
+        warnings.push(`${dealer2.name} е на почивка в този слот`)
+        isValid = false
+      }
+
+      if (dealer1Assignment === "-" || dealer2Assignment === "-") {
+        warnings.push("Един от дилърите не работи в този слот")
+        isValid = false
+      }
+
+      // Check if dealers can work each other's tables
+      if (isValid) {
+        if (!dealer1.available_tables.includes(dealer2Assignment)) {
+          warnings.push(`${dealer1.name} не може да работи на маса ${dealer2Assignment}`)
+          isValid = false
+        }
+        if (!dealer2.available_tables.includes(dealer1Assignment)) {
+          warnings.push(`${dealer2.name} не може да работи на маса ${dealer1Assignment}`)
+          isValid = false
+        }
+      }
+
+      if (isValid) {
+        // Apply the swap
+        updatedScheduleData[timeSlot][dealer1Id] = dealer2Assignment
+        updatedScheduleData[timeSlot][dealer2Id] = dealer1Assignment
+        message = `Успешна смяна: ${dealer1.name} ще работи на ${dealer2Assignment}, ${dealer2.name} ще работи на ${dealer1Assignment}`
+      } else {
+        message = "Смяната не е възможна поради следните проблеми:"
+      }
+
+      setDealerChangePreviewData({
+        dealer1Id,
+        dealer2Id,
+        timeSlot,
+        scheduleData: updatedScheduleData,
+        isValid,
+        message,
+        warnings,
+      })
+    } catch (error: any) {
+      console.error("Error generating dealer change preview:", error)
+      toast.error(`Error generating preview: ${error.message}`)
+      setIsPreviewingDealerChange(false)
     }
   }
 
@@ -589,9 +910,37 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     toast.success("Dealer marked as absent and schedule updated")
   }
 
+  const confirmExtraBreak = () => {
+    if (!extraBreakPreviewData || !extraBreakPreviewData.isValid) return
+    setScheduleData(extraBreakPreviewData.scheduleData)
+    setExtraBreakForm({ dealerId: "", timeSlot: "", reason: "" })
+    setExtraBreakPreviewData(null)
+    setIsPreviewingExtraBreak(false)
+    toast.success("Extra break applied successfully")
+  }
+
+  const confirmDealerChange = () => {
+    if (!dealerChangePreviewData || !dealerChangePreviewData.isValid) return
+    setScheduleData(dealerChangePreviewData.scheduleData)
+    setDealerChangeForm({ dealer1Id: "", dealer2Id: "", timeSlot: "" })
+    setDealerChangePreviewData(null)
+    setIsPreviewingDealerChange(false)
+    toast.success("Dealer change applied successfully")
+  }
+
   const cancelAbsence = () => {
     setPreviewData(null)
     setIsPreviewingAbsence(false)
+  }
+
+  const cancelExtraBreak = () => {
+    setExtraBreakPreviewData(null)
+    setIsPreviewingExtraBreak(false)
+  }
+
+  const cancelDealerChange = () => {
+    setDealerChangePreviewData(null)
+    setIsPreviewingDealerChange(false)
   }
 
   const handleRemoveAbsent = (index: number) => {
@@ -674,8 +1023,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
 
   return (
     <div className="space-y-6">
-      {/* AlertDialog за запазване е премахнат, тъй като логиката е променена */}
-
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Edit Schedule</h1>
       </div>
@@ -721,11 +1068,9 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       </Card>
 
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="schedule">Schedule</TabsTrigger>
-          <TabsTrigger value="firstBreak">First Break</TabsTrigger>
-          <TabsTrigger value="lastBreak">Last Break</TabsTrigger>
-          <TabsTrigger value="absent">Absent Dealers</TabsTrigger>
+          <TabsTrigger value="actions">Actions</TabsTrigger>
         </TabsList>
 
         <TabsContent value="schedule" className="mt-4">
@@ -733,8 +1078,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
             <CardHeader>
               <CardTitle>Schedule Assignments</CardTitle>
               <CardDescription>
-                Edit dealer assignments. Manual break preferences are applied directly. Use "Regenerate Schedule" in
-                "Absent Dealers" tab to re-calculate all based on preferences.
+                Edit dealer assignments. Manual break preferences are applied directly. Use actions tab to apply
+                preferences and manage absences.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -820,21 +1165,23 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
           </Card>
         </TabsContent>
 
-        <TabsContent value="firstBreak" className="mt-4">
+        <TabsContent value="actions" className="mt-4">
           <Card>
             <CardHeader>
-              <CardTitle>First Break Preferences</CardTitle>
+              <CardTitle>Schedule Actions</CardTitle>
               <CardDescription>
-                Selecting a dealer here will mark their first working slot as "BREAK". This change is applied
-                immediately to the schedule.
+                Apply break preferences, manage absent dealers, extra breaks, and dealer changes. Changes are applied
+                immediately to the current schedule.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-8">
+              {/* First Break Section */}
               <div className="border rounded-md">
                 <div className="p-3 border-b bg-muted/50">
-                  <h3 className="font-medium">Select Dealers for First Break</h3>
+                  <h3 className="font-medium">First Break Preferences</h3>
+                  <p className="text-sm text-muted-foreground">Mark dealers for first working slot break</p>
                 </div>
-                <div className="p-3 max-h-[400px] overflow-y-auto space-y-3">
+                <div className="p-3 max-h-[200px] overflow-y-auto space-y-3">
                   {dealersToDisplayInTable.length > 0 ? (
                     dealersToDisplayInTable.map((dealer) => {
                       const preference = firstBreakPreferences.find((p) => p.dealerId === dealer.id)
@@ -848,7 +1195,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                               handleFirstBreakPreferenceChange(
                                 dealer.id,
                                 checked === true,
-                                // Provide a default reason if unchecking, or use existing if re-checking/changing reason
                                 (checked === true
                                   ? preference?.reason || "dealer_request"
                                   : preference?.reason) as FirstBreakReasonCode,
@@ -886,25 +1232,14 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                   )}
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
-        <TabsContent value="lastBreak" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Last Break Preferences</CardTitle>
-              <CardDescription>
-                Selecting a dealer here will mark their last working slot as "BREAK". This change is applied immediately
-                to the schedule.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+              {/* Last Break Section */}
               <div className="border rounded-md">
                 <div className="p-3 border-b bg-muted/50">
-                  <h3 className="font-medium">Select Dealers for Last Break</h3>
+                  <h3 className="font-medium">Last Break Preferences</h3>
+                  <p className="text-sm text-muted-foreground">Mark dealers for last working slot break</p>
                 </div>
-                <div className="p-3 max-h-[400px] overflow-y-auto space-y-3">
+                <div className="p-3 max-h-[200px] overflow-y-auto space-y-3">
                   {dealersToDisplayInTable.length > 0 ? (
                     dealersToDisplayInTable.map((dealer) => {
                       const preference = lastBreakPreferences.find((p) => p.dealerId === dealer.id)
@@ -955,158 +1290,380 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                   )}
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
 
-        <TabsContent value="absent" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Absent Dealers</CardTitle>
-              <CardDescription>
-                Mark dealers as absent. This will use `handleDealerLeaving` to attempt reassignments.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid gap-4 md:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="dealer">Dealer</Label>
-                  <Select
-                    value={absenceForm.dealerId}
-                    onValueChange={(value) => setAbsenceForm({ ...absenceForm, dealerId: value })}
-                  >
-                    <SelectTrigger id="dealer">
-                      <SelectValue placeholder="Select dealer" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {dealersCurrentlyInScheduleForAbsenceSelection.map((dealer) => (
-                        <SelectItem key={dealer.id} value={dealer.id}>
-                          {dealer.name} {dealer.nickname && `(${dealer.nickname})`}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="startTime">Start Time</Label>
-                  <Select
-                    value={absenceForm.startTime}
-                    onValueChange={(value) => setAbsenceForm({ ...absenceForm, startTime: value })}
-                  >
-                    <SelectTrigger id="startTime">
-                      <SelectValue placeholder="Select time" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {timeSlots.map((slot) => (
-                        <SelectItem key={slot.time} value={slot.time}>
-                          {slot.formattedTime}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="reason">Reason</Label>
-                  <Select
-                    value={absenceForm.reason}
-                    onValueChange={(value) => setAbsenceForm({ ...absenceForm, reason: value as AbsenceReasonUi })}
-                  >
-                    <SelectTrigger id="reason">
-                      <SelectValue placeholder="Select reason" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="sick">Болест</SelectItem>
-                      <SelectItem value="injured">Пострадал</SelectItem>
-                      <SelectItem value="unauthorized">Своеволен</SelectItem>
-                      <SelectItem value="voluntary">Тръгнал си доброволно</SelectItem>
-                      <SelectItem value="break">Освободен за почивка</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="flex justify-end space-x-2">
-                <Button
-                  variant="outline"
-                  onClick={handleMarkAbsent}
-                  disabled={!absenceForm.dealerId || !absenceForm.startTime}
-                >
-                  Mark as Absent & Preview Reassignment
-                </Button>
-                <Button onClick={runRegenerationForAll} disabled={isRegenerating}>
-                  <RefreshCw className="mr-2 h-4 w-4" />
-                  {isRegenerating ? "Regenerating..." : "Regenerate Full Schedule"}
-                </Button>
-              </div>
-              {isPreviewingAbsence && previewData && (
-                <div className="mt-6 border rounded-md p-4 bg-muted/20">
-                  <h3 className="text-lg font-medium mb-4">Preview of Schedule Changes (Absence)</h3>
-                  <p className="mb-4">
-                    <strong>Dealer:</strong> {dealers.find((d) => d.id === previewData.dealerId)?.name || "Unknown"}{" "}
-                    will be marked as absent from{" "}
-                    {timeSlots.find((t) => t.time === previewData.startTime)?.formattedTime || previewData.startTime}{" "}
-                    due to {getAbsenceReasonLabel(previewData.reason)}. The schedule below shows attempted
-                    reassignments.
+              {/* Extra Break Section */}
+              <div className="border rounded-md">
+                <div className="p-3 border-b bg-muted/50">
+                  <h3 className="font-medium">Extra Break</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Request additional break for a dealer. Another dealer will cover their table.
                   </p>
-                  <div className="max-h-[400px] overflow-auto mb-4">
-                    <ScheduleTableComponent
-                      schedule={{ ...schedule, schedule_data: previewData.scheduleData } as Schedule}
-                      dealers={dealersToDisplayInTable}
-                    />
+                </div>
+                <div className="p-4 space-y-4">
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="extraBreakDealer">Dealer</Label>
+                      <Select
+                        value={extraBreakForm.dealerId}
+                        onValueChange={(value) => setExtraBreakForm({ ...extraBreakForm, dealerId: value })}
+                      >
+                        <SelectTrigger id="extraBreakDealer">
+                          <SelectValue placeholder="Select dealer" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dealersCurrentlyInScheduleForAbsenceSelection.map((dealer) => (
+                            <SelectItem key={dealer.id} value={dealer.id}>
+                              {dealer.name} {dealer.nickname && `(${dealer.nickname})`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="extraBreakTime">Time Slot</Label>
+                      <Select
+                        value={extraBreakForm.timeSlot}
+                        onValueChange={(value) => setExtraBreakForm({ ...extraBreakForm, timeSlot: value })}
+                      >
+                        <SelectTrigger id="extraBreakTime">
+                          <SelectValue placeholder="Select time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {timeSlots.map((slot) => (
+                            <SelectItem key={slot.time} value={slot.time}>
+                              {slot.formattedTime}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="extraBreakReason">Reason</Label>
+                      <Select
+                        value={extraBreakForm.reason}
+                        onValueChange={(value) => setExtraBreakForm({ ...extraBreakForm, reason: value })}
+                      >
+                        <SelectTrigger id="extraBreakReason">
+                          <SelectValue placeholder="Select reason" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="personal">Лична нужда</SelectItem>
+                          <SelectItem value="medical">Медицинска нужда</SelectItem>
+                          <SelectItem value="emergency">Спешност</SelectItem>
+                          <SelectItem value="other">Друго</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        variant="outline"
+                        onClick={handleExtraBreak}
+                        disabled={!extraBreakForm.dealerId || !extraBreakForm.timeSlot || !extraBreakForm.reason}
+                        className="w-full"
+                      >
+                        Preview Extra Break
+                      </Button>
+                    </div>
                   </div>
-                  <div className="flex justify-end space-x-2">
-                    <Button variant="outline" onClick={cancelAbsence}>
-                      Cancel
+                  {isPreviewingExtraBreak && extraBreakPreviewData && (
+                    <div className="mt-6 border rounded-md p-4 bg-muted/20">
+                      <h3 className="text-lg font-medium mb-4 flex items-center gap-2">
+                        {extraBreakPreviewData.isValid ? (
+                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        ) : (
+                          <AlertTriangle className="h-5 w-5 text-red-600" />
+                        )}
+                        Extra Break Preview
+                      </h3>
+                      <p className="mb-4">{extraBreakPreviewData.message}</p>
+                      {extraBreakPreviewData.isValid && (
+                        <div className="max-h-[300px] overflow-auto mb-4">
+                          <ScheduleTableComponent
+                            schedule={{ ...schedule, schedule_data: extraBreakPreviewData.scheduleData } as Schedule}
+                            dealers={dealersToDisplayInTable}
+                          />
+                        </div>
+                      )}
+                      <div className="flex justify-end space-x-2">
+                        <Button variant="outline" onClick={cancelExtraBreak}>
+                          Cancel
+                        </Button>
+                        {extraBreakPreviewData.isValid && (
+                          <Button onClick={confirmExtraBreak}>Confirm Extra Break</Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Dealer Change Section */}
+              <div className="border rounded-md">
+                <div className="p-3 border-b bg-muted/50">
+                  <h3 className="font-medium">Dealer Change</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Swap two dealers' table assignments for a specific time slot.
+                  </p>
+                </div>
+                <div className="p-4 space-y-4">
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="dealer1">First Dealer</Label>
+                      <Select
+                        value={dealerChangeForm.dealer1Id}
+                        onValueChange={(value) => setDealerChangeForm({ ...dealerChangeForm, dealer1Id: value })}
+                      >
+                        <SelectTrigger id="dealer1">
+                          <SelectValue placeholder="Select dealer" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dealersToDisplayInTable.map((dealer) => (
+                            <SelectItem key={dealer.id} value={dealer.id}>
+                              {dealer.name} {dealer.nickname && `(${dealer.nickname})`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="dealer2">Second Dealer</Label>
+                      <Select
+                        value={dealerChangeForm.dealer2Id}
+                        onValueChange={(value) => setDealerChangeForm({ ...dealerChangeForm, dealer2Id: value })}
+                      >
+                        <SelectTrigger id="dealer2">
+                          <SelectValue placeholder="Select dealer" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dealersToDisplayInTable
+                            .filter((d) => d.id !== dealerChangeForm.dealer1Id)
+                            .map((dealer) => (
+                              <SelectItem key={dealer.id} value={dealer.id}>
+                                {dealer.name} {dealer.nickname && `(${dealer.nickname})`}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="changeTimeSlot">Time Slot</Label>
+                      <Select
+                        value={dealerChangeForm.timeSlot}
+                        onValueChange={(value) => setDealerChangeForm({ ...dealerChangeForm, timeSlot: value })}
+                      >
+                        <SelectTrigger id="changeTimeSlot">
+                          <SelectValue placeholder="Select time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {timeSlots.map((slot) => (
+                            <SelectItem key={slot.time} value={slot.time}>
+                              {slot.formattedTime}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        variant="outline"
+                        onClick={handleDealerChange}
+                        disabled={
+                          !dealerChangeForm.dealer1Id || !dealerChangeForm.dealer2Id || !dealerChangeForm.timeSlot
+                        }
+                        className="w-full"
+                      >
+                        Preview Dealer Change
+                      </Button>
+                    </div>
+                  </div>
+                  {isPreviewingDealerChange && dealerChangePreviewData && (
+                    <div className="mt-6 border rounded-md p-4 bg-muted/20">
+                      <h3 className="text-lg font-medium mb-4 flex items-center gap-2">
+                        {dealerChangePreviewData.isValid ? (
+                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        ) : (
+                          <AlertTriangle className="h-5 w-5 text-red-600" />
+                        )}
+                        Dealer Change Preview
+                      </h3>
+                      <p className="mb-4">{dealerChangePreviewData.message}</p>
+                      {dealerChangePreviewData.warnings.length > 0 && (
+                        <div className="mb-4">
+                          <ul className="list-disc list-inside text-red-600 space-y-1">
+                            {dealerChangePreviewData.warnings.map((warning, index) => (
+                              <li key={index}>{warning}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {dealerChangePreviewData.isValid && (
+                        <div className="max-h-[300px] overflow-auto mb-4">
+                          <ScheduleTableComponent
+                            schedule={{ ...schedule, schedule_data: dealerChangePreviewData.scheduleData } as Schedule}
+                            dealers={dealersToDisplayInTable}
+                          />
+                        </div>
+                      )}
+                      <div className="flex justify-end space-x-2">
+                        <Button variant="outline" onClick={cancelDealerChange}>
+                          Cancel
+                        </Button>
+                        {dealerChangePreviewData.isValid && (
+                          <Button onClick={confirmDealerChange}>Confirm Dealer Change</Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Absent Dealers Section */}
+              <div className="border rounded-md">
+                <div className="p-3 border-b bg-muted/50">
+                  <h3 className="font-medium">Absent Dealers</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Mark dealers as absent. Schedule will be recalculated from the specified time onwards.
+                  </p>
+                </div>
+                <div className="p-4 space-y-4">
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div className="space-y-2">
+                      <Label htmlFor="dealer">Dealer</Label>
+                      <Select
+                        value={absenceForm.dealerId}
+                        onValueChange={(value) => setAbsenceForm({ ...absenceForm, dealerId: value })}
+                      >
+                        <SelectTrigger id="dealer">
+                          <SelectValue placeholder="Select dealer" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {dealersCurrentlyInScheduleForAbsenceSelection.map((dealer) => (
+                            <SelectItem key={dealer.id} value={dealer.id}>
+                              {dealer.name} {dealer.nickname && `(${dealer.nickname})`}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="startTime">Start Time</Label>
+                      <Select
+                        value={absenceForm.startTime}
+                        onValueChange={(value) => setAbsenceForm({ ...absenceForm, startTime: value })}
+                      >
+                        <SelectTrigger id="startTime">
+                          <SelectValue placeholder="Select time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {timeSlots.map((slot) => (
+                            <SelectItem key={slot.time} value={slot.time}>
+                              {slot.formattedTime}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="reason">Reason</Label>
+                      <Select
+                        value={absenceForm.reason}
+                        onValueChange={(value) => setAbsenceForm({ ...absenceForm, reason: value as AbsenceReasonUi })}
+                      >
+                        <SelectTrigger id="reason">
+                          <SelectValue placeholder="Select reason" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="sick">Болест</SelectItem>
+                          <SelectItem value="injured">Пострадал</SelectItem>
+                          <SelectItem value="unauthorized">Своеволен</SelectItem>
+                          <SelectItem value="voluntary">Тръгнал си доброволно</SelectItem>
+                          <SelectItem value="break">Освободен за почивка</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="flex justify-end">
+                    <Button
+                      variant="outline"
+                      onClick={handleMarkAbsent}
+                      disabled={!absenceForm.dealerId || !absenceForm.startTime}
+                    >
+                      Mark as Absent & Preview Reassignment
                     </Button>
-                    <Button onClick={confirmAbsence}>Confirm Absence & Apply Changes</Button>
                   </div>
-                </div>
-              )}
-              {absentDealers.length > 0 && (
-                <div className="mt-6">
-                  <h3 className="text-lg font-medium mb-2">Absent Dealers List</h3>
-                  <div className="border rounded-md overflow-hidden">
-                    <table className="w-full">
-                      <thead className="bg-muted">
-                        <tr>
-                          <th className="p-2 text-left">Dealer</th>
-                          <th className="p-2 text-left">From Time</th>
-                          <th className="p-2 text-left">Reason</th>
-                          <th className="p-2 text-right">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {absentDealers.map((absent, index) => {
-                          const dealer = dealers.find((d) => d.id === absent.dealerId)
-                          const timeSlot = timeSlots.find((t) => t.time === absent.startTime)
-                          return (
-                            <tr key={index} className="border-t">
-                              <td className="p-2">
-                                {dealer
-                                  ? dealer.nickname
-                                    ? `${dealer.name} - ${dealer.nickname}`
-                                    : dealer.name
-                                  : "Unknown"}
-                              </td>
-                              <td className="p-2">{timeSlot ? timeSlot.formattedTime : absent.startTime}</td>
-                              <td className="p-2">{getAbsenceReasonLabel(absent.reason as AbsenceReasonUi)}</td>
-                              <td className="p-2 text-right">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => handleRemoveAbsent(index)}
-                                  className="h-8 px-2 text-destructive hover:text-destructive"
-                                >
-                                  Remove
-                                </Button>
-                              </td>
+                  {isPreviewingAbsence && previewData && (
+                    <div className="mt-6 border rounded-md p-4 bg-muted/20">
+                      <h3 className="text-lg font-medium mb-4">Preview of Schedule Changes (Absence)</h3>
+                      <p className="mb-4">
+                        <strong>Dealer:</strong> {dealers.find((d) => d.id === previewData.dealerId)?.name || "Unknown"}{" "}
+                        will be marked as absent from{" "}
+                        {timeSlots.find((t) => t.time === previewData.startTime)?.formattedTime ||
+                          previewData.startTime}{" "}
+                        due to {getAbsenceReasonLabel(previewData.reason)}. The schedule below shows attempted
+                        reassignments.
+                      </p>
+                      <div className="max-h-[400px] overflow-auto mb-4">
+                        <ScheduleTableComponent
+                          schedule={{ ...schedule, schedule_data: previewData.scheduleData } as Schedule}
+                          dealers={dealersToDisplayInTable}
+                        />
+                      </div>
+                      <div className="flex justify-end space-x-2">
+                        <Button variant="outline" onClick={cancelAbsence}>
+                          Cancel
+                        </Button>
+                        <Button onClick={confirmAbsence}>Confirm Absence & Apply Changes</Button>
+                      </div>
+                    </div>
+                  )}
+                  {absentDealers.length > 0 && (
+                    <div className="mt-6">
+                      <h3 className="text-lg font-medium mb-2">Absent Dealers List</h3>
+                      <div className="border rounded-md overflow-hidden">
+                        <table className="w-full">
+                          <thead className="bg-muted">
+                            <tr>
+                              <th className="p-2 text-left">Dealer</th>
+                              <th className="p-2 text-left">From Time</th>
+                              <th className="p-2 text-left">Reason</th>
+                              <th className="p-2 text-right">Actions</th>
                             </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
+                          </thead>
+                          <tbody>
+                            {absentDealers.map((absent, index) => {
+                              const dealer = dealers.find((d) => d.id === absent.dealerId)
+                              const timeSlot = timeSlots.find((t) => t.time === absent.startTime)
+                              return (
+                                <tr key={index} className="border-t">
+                                  <td className="p-2">
+                                    {dealer
+                                      ? dealer.nickname
+                                        ? `${dealer.name} - ${dealer.nickname}`
+                                        : dealer.name
+                                      : "Unknown"}
+                                  </td>
+                                  <td className="p-2">{timeSlot ? timeSlot.formattedTime : absent.startTime}</td>
+                                  <td className="p-2">{getAbsenceReasonLabel(absent.reason as AbsenceReasonUi)}</td>
+                                  <td className="p-2 text-right">
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleRemoveAbsent(index)}
+                                      className="h-8 px-2 text-destructive hover:text-destructive"
+                                    >
+                                      Remove
+                                    </Button>
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
+              </div>
             </CardContent>
           </Card>
         </TabsContent>
