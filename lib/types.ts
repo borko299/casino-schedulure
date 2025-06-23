@@ -16,12 +16,16 @@ export type CasinoTable = {
 }
 
 export type FirstBreakReasonCode = "dealer_request" | "late_for_table" | "schedule_needs" | "other"
-export type LastBreakReasonCode = "personal_commitment" | "dealer_request" | "schedule_needs" | "other"
+export type LastBreakReasonCode = "dealer_request" // Simplified
 
 export interface DealerBreakPreference {
   dealerId: string
-  reason: FirstBreakReasonCode | LastBreakReasonCode
-  // customReason?: string; // За бъдещо разширение
+  reason: FirstBreakReasonCode | LastBreakReasonCode // Specific reason codes
+  // Only applicable for first breaks if reason is 'late_for_table'
+  punishment?: {
+    isActive: boolean // True if "Накажи с 4 маси" is checked
+    tablesToWork: 4 // Fixed at 4 as per request
+  }
 }
 
 export type Schedule = {
@@ -33,6 +37,7 @@ export type Schedule = {
       firstBreakPreferences?: DealerBreakPreference[]
       lastBreakPreferences?: DealerBreakPreference[]
     }
+    _manualAdjustments?: any[] // Keeping manualAdjustments for now
   }
   absent_dealers?: {
     dealerId: string

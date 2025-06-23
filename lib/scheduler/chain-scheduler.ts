@@ -11,9 +11,11 @@ import { initializeDealerState, updateDealerStateForSlot } from "./dealer-state"
 
 const BREAK_PRIORITY_WEIGHTS = {
   SLOTS_SINCE_LAST_BREAK: 10,
-  BREAK_DEFICIT: 20, // По-голяма тежест за тези, които изостават с почивките
-  RANDOM_FACTOR_RANGE: 5, // Малък диапазон за разбъркване
+  BREAK_DEFICIT: 20,
+  RANDOM_FACTOR_RANGE: 5,
 }
+
+const PUNISHMENT_BREAK_PRIORITY = -1000000 // Effectively ensures they are not chosen for break
 
 /**
  * Основна функция, която имплементира новата логика с верижна ротация.
@@ -28,7 +30,8 @@ export function generateChainRotationSchedule(
   const schedule: ScheduleData = {}
   timeSlots.forEach((slot) => (schedule[slot.time] = {}))
 
-  const dealerState = initializeDealerState(eligibleDealers, params)
+  // Pass preferences to initializeDealerState
+  const dealerState = initializeDealerState(eligibleDealers, params, preferences)
 
   // Слот 0: Инициализация
   initializeFirstSlot(schedule, timeSlots[0], eligibleDealers, uniqueTables, dealerState, params, preferences)
@@ -44,6 +47,7 @@ export function generateChainRotationSchedule(
       dealerState,
       params,
       timeSlots,
+      preferences, // Pass preferences
     )
   }
 
@@ -63,30 +67,39 @@ function initializeFirstSlot(
   preferences?: SchedulePreferences,
 ) {
   const slotAssignments: Record<string, string> = {}
-  const dealersToAssign = [...dealers]
+  // const dealersToAssign = [...dealers] // Not directly used like this anymore
   const tablesToCover = [...tables]
 
   // 1. Определяме кои дилъри ще почиват първи
   const dealersOnBreak: DealerWithTables[] = []
-  const preferredFirstBreak = preferences?.firstBreakDealers || []
 
-  // Добавяме тези с предпочитания
-  preferredFirstBreak.forEach((dealerId) => {
-    const dealer = dealers.find((d) => d.id === dealerId)
+  // Filter out punished dealers from break consideration initially
+  const nonPunishedDealers = dealers.filter(
+    (d) => !(state[d.id].isUnderPunishment && !state[d.id].hasCompletedPunishment),
+  )
+
+  const preferredFirstBreakDealerIds =
+    preferences?.firstBreakPreferences
+      ?.filter((p) => !(p.punishment?.isActive && p.reason === "late_for_table")) // Exclude those with active punishment from *preferred* break
+      .map((p) => p.dealerId) || []
+
+  // Add those with preferences (and not under active punishment for this preference)
+  preferredFirstBreakDealerIds.forEach((dealerId) => {
+    const dealer = nonPunishedDealers.find((d) => d.id === dealerId)
     if (dealer && dealersOnBreak.length < params.dealersOnBreakCount) {
       dealersOnBreak.push(dealer)
     }
   })
 
-  // Допълваме до нужния брой почиващи, използвайки приоритет
-  const remainingCandidates = dealers.filter((d) => !dealersOnBreak.find((db) => db.id === d.id))
-  remainingCandidates.sort(
+  // Допълваме до нужния брой почиващи, използвайки приоритет, from non-punished and non-preferred
+  const remainingCandidatesForBreak = nonPunishedDealers.filter((d) => !dealersOnBreak.find((db) => db.id === d.id))
+  remainingCandidatesForBreak.sort(
     (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
   )
 
   let i = 0
-  while (dealersOnBreak.length < params.dealersOnBreakCount && i < remainingCandidates.length) {
-    dealersOnBreak.push(remainingCandidates[i])
+  while (dealersOnBreak.length < params.dealersOnBreakCount && i < remainingCandidatesForBreak.length) {
+    dealersOnBreak.push(remainingCandidatesForBreak[i])
     i++
   }
 
@@ -96,23 +109,28 @@ function initializeFirstSlot(
     updateDealerStateForSlot(dealer.id, "BREAK", 0, state)
   })
 
-  // 3. Назначаваме останалите на маси
+  // 3. Назначаваме останалите на маси (including punished dealers)
   const workingDealers = dealers.filter((d) => !slotAssignments[d.id])
   const availableTablesForFirstSlot = new Set(tables)
 
   workingDealers.forEach((dealer) => {
-    const targetTable = findBestTableForDealer(dealer, availableTablesForFirstSlot, state, null) // null за previousAssignments, тъй като е първи слот
+    const targetTable = findBestTableForDealer(dealer, availableTablesForFirstSlot, state, null)
     if (targetTable) {
       slotAssignments[dealer.id] = targetTable
       availableTablesForFirstSlot.delete(targetTable)
       updateDealerStateForSlot(dealer.id, targetTable, 0, state)
     } else if (tablesToCover.length > 0) {
-      // Fallback, ако findBestTableForDealer не върне нищо (не би трябвало)
-      const table = tablesToCover.shift()!
+      const table = tablesToCover.shift()! // Should always have a table if tablesToCover > 0
       slotAssignments[dealer.id] = table
       updateDealerStateForSlot(dealer.id, table, 0, state)
     } else {
-      slotAssignments[dealer.id] = "BREAK" // Ако няма маси, почива
+      // This case should ideally not happen if D > T. If it does, surplus dealers (even punished) might get a break.
+      // This needs careful handling if params.dealersOnBreakCount was already met.
+      // For now, if no tables, they get a break.
+      console.warn(
+        `[initializeFirstSlot] No table for dealer ${dealer.name} (ID: ${dealer.id}), assigning BREAK. Punished: ${state[dealer.id].isUnderPunishment}`,
+      )
+      slotAssignments[dealer.id] = "BREAK"
       updateDealerStateForSlot(dealer.id, "BREAK", 0, state)
     }
   })
@@ -129,7 +147,12 @@ function calculateBreakPriority(
   params: ScheduleParameters,
 ): number {
   const dealerData = state[dealer.id]
-  if (!dealerData) return -1 // Не трябва да се случва
+  if (!dealerData) return -1
+
+  // If dealer is under punishment and hasn't completed it, they have lowest priority for break
+  if (dealerData.isUnderPunishment && !dealerData.hasCompletedPunishment) {
+    return PUNISHMENT_BREAK_PRIORITY + (dealerData.punishmentTablesWorked || 0) // Small increment to differentiate if needed, but still very low
+  }
 
   const slotsSince = dealerData.slotsSinceLastBreak
   const breakDeficit = dealerData.targetBreaks - dealerData.breaks
@@ -137,11 +160,10 @@ function calculateBreakPriority(
 
   let score = 0
   score += slotsSince * BREAK_PRIORITY_WEIGHTS.SLOTS_SINCE_LAST_BREAK
-  score += Math.max(0, breakDeficit) * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT // Само положителен дефицит (т.е. изоставане)
+  score += Math.max(0, breakDeficit) * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT
 
-  // Ако дилърът е взел повече почивки от целевите, намаляваме приоритета му
   if (breakDeficit < 0) {
-    score += breakDeficit * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT * 2 // Двойно наказание за излишък
+    score += breakDeficit * BREAK_PRIORITY_WEIGHTS.BREAK_DEFICIT * 2
   }
 
   score += randomFactor
@@ -160,24 +182,60 @@ function generateSlot(
   state: Record<string, DealerAssignment>,
   params: ScheduleParameters,
   timeSlots: TimeSlot[],
+  preferences?: SchedulePreferences, // Added preferences
 ) {
   const slotAssignments: Record<string, string> = {}
   const previousAssignments = schedule[previousSlot.time]
 
   // 1. Determine who goes on a planned break
+  // Filter out punished dealers from break consideration
   const potentialBreakCandidates = dealers.filter(
-    (d) => previousAssignments[d.id] && previousAssignments[d.id] !== "BREAK",
+    (d) =>
+      previousAssignments[d.id] &&
+      previousAssignments[d.id] !== "BREAK" &&
+      !(state[d.id].isUnderPunishment && !state[d.id].hasCompletedPunishment),
   )
-  potentialBreakCandidates.sort(
+
+  // Handle last break preferences
+  const preferredLastBreakDealerIds = preferences?.lastBreakPreferences?.map((p) => p.dealerId) || []
+  const dealersGoingToPlannedBreak: DealerWithTables[] = []
+
+  // Prioritize dealers with last break preference if it's late in the shift
+  const currentSlotIndex = timeSlots.findIndex((ts) => ts.time === currentSlot.time)
+  const isLateShift = currentSlotIndex >= timeSlots.length - params.dealersOnBreakCount - 2 // Heuristic for "late"
+
+  if (isLateShift) {
+    preferredLastBreakDealerIds.forEach((dealerId) => {
+      const dealer = potentialBreakCandidates.find((d) => d.id === dealerId)
+      // Ensure they are not already on break and we haven't filled all break slots
+      if (dealer && dealersGoingToPlannedBreak.length < params.dealersOnBreakCount) {
+        const alreadyTakingBreak = dealersGoingToPlannedBreak.some((bDealer) => bDealer.id === dealer.id)
+        if (!alreadyTakingBreak) {
+          dealersGoingToPlannedBreak.push(dealer)
+        }
+      }
+    })
+  }
+
+  // Fill remaining break slots based on priority
+  const remainingCandidatesForBreak = potentialBreakCandidates.filter(
+    (d) => !dealersGoingToPlannedBreak.find((bDealer) => bDealer.id === d.id),
+  )
+  remainingCandidatesForBreak.sort(
     (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
   )
-  const dealersGoingToPlannedBreak = potentialBreakCandidates.slice(0, params.dealersOnBreakCount)
+
+  let i = 0
+  while (dealersGoingToPlannedBreak.length < params.dealersOnBreakCount && i < remainingCandidatesForBreak.length) {
+    dealersGoingToPlannedBreak.push(remainingCandidatesForBreak[i])
+    i++
+  }
 
   dealersGoingToPlannedBreak.forEach((dealer) => {
     slotAssignments[dealer.id] = "BREAK"
   })
 
-  // 2. Identify dealers who will be active (either returning or continuing)
+  // 2. Identify dealers who will be active (either returning or continuing, including punished)
   const returningDealers = dealers.filter((d) => previousAssignments[d.id] === "BREAK")
   const continuingDealers = dealers.filter(
     (d) =>
@@ -185,6 +243,10 @@ function generateSlot(
       previousAssignments[d.id] !== "BREAK" &&
       !dealersGoingToPlannedBreak.find((bDealer) => bDealer.id === d.id),
   )
+
+  // Punished dealers MUST continue if they were working, unless all tables are full by non-punished returning/continuing.
+  // This part is complex. The current logic for `dealersWhoWillWorkOnTables` should handle it if punished dealers
+  // are part of `continuingDealers` and have a very low break priority.
 
   const potentiallyActiveDealers = [...returningDealers, ...continuingDealers]
 
@@ -204,45 +266,59 @@ function generateSlot(
     dealersWhoWillWorkOnTables.push(...potentiallyActiveDealers)
   } else {
     // More potentially active dealers than tables. Some must take an additional break.
-    // Sort by break priority: those with higher priority take the additional break.
+    // Sort by break priority: those with higher priority (less need for break, or punished) take the additional break.
+    // Punished dealers should be at the end of this sort (lowest break priority).
     const sortedActiveDealers = [...potentiallyActiveDealers].sort(
       (a, b) => calculateBreakPriority(b, state, params) - calculateBreakPriority(a, state, params),
-    )
+    ) // Higher score = higher priority TO WORK (less priority for break)
 
     const numToWork = tables.length
 
-    for (let i = 0; i < sortedActiveDealers.length; i++) {
+    for (let j = 0; j < sortedActiveDealers.length; j++) {
+      const dealer = sortedActiveDealers[j]
+      // Punished dealers should be prioritized to work if tables are available
+      if (state[dealer.id].isUnderPunishment && !state[dealer.id].hasCompletedPunishment) {
+        if (dealersWhoWillWorkOnTables.length < numToWork) {
+          dealersWhoWillWorkOnTables.push(dealer)
+        } else {
+          // This case is problematic: a punished dealer needs to work but no tables.
+          // This implies a flaw in D, T, or break count logic.
+          // For now, they might be forced into an additional break if all tables are taken by higher priority (non-punished)
+          dealersGoingToAdditionalBreak.push(dealer)
+          console.warn(
+            `[generateSlot] Punished dealer ${dealer.name} (ID: ${dealer.id}) forced to additional break due to no tables. This might be unexpected.`,
+          )
+        }
+        continue // Process next dealer
+      }
+
+      // Non-punished dealers
       if (dealersWhoWillWorkOnTables.length < numToWork) {
-        dealersWhoWillWorkOnTables.push(sortedActiveDealers[i])
+        dealersWhoWillWorkOnTables.push(dealer)
       } else {
-        dealersGoingToAdditionalBreak.push(sortedActiveDealers[i])
+        dealersGoingToAdditionalBreak.push(dealer)
       }
     }
-    // Re-sort dealersWhoWillWorkOnTables to a more natural order if needed, e.g., by name or original order
-    // For now, the order from sort (lowest break priority first) is fine.
   }
 
   dealersGoingToAdditionalBreak.forEach((dealer) => {
-    slotAssignments[dealer.id] = "BREAK"
+    // Ensure not already assigned a planned break
+    if (!slotAssignments[dealer.id]) {
+      slotAssignments[dealer.id] = "BREAK"
+    }
   })
 
   // 4. Assign tables to dealersWhoWillWorkOnTables
-  // Optional: Sort dealersWhoWillWorkOnTables, e.g., to prioritize returning dealers for table choice,
-  // or maintain a consistent order. For now, using the order determined above.
-  // Example: prioritize returning dealers
   dealersWhoWillWorkOnTables.sort((a, b) => {
     const aIsReturning = returningDealers.some((rd) => rd.id === a.id)
     const bIsReturning = returningDealers.some((rd) => rd.id === b.id)
     if (aIsReturning && !bIsReturning) return -1
     if (!aIsReturning && bIsReturning) return 1
-    // Could add secondary sort, e.g. by name for consistency if priorities are equal
-    // return a.name.localeCompare(b.name);
     return 0
   })
 
   dealersWhoWillWorkOnTables.forEach((dealer) => {
-    // Ensure dealer is not already assigned a break (should be covered by logic above)
-    if (slotAssignments[dealer.id] === "BREAK") return
+    if (slotAssignments[dealer.id] === "BREAK") return // Already assigned a break (planned or additional)
 
     const targetTable = findBestTableForDealer(dealer, availableTablesForSlot, state, previousAssignments)
 
@@ -251,7 +327,7 @@ function generateSlot(
       availableTablesForSlot.delete(targetTable)
     } else {
       console.error(
-        `CRITICAL: No suitable table found for dealer ${dealer.name} (ID: ${dealer.id}) in slot ${currentSlot.formattedTime}, even with fallbacks. Available tables count: ${availableTablesForSlot.size}. This indicates a potential issue in table availability or selection logic. Assigning ERROR_NO_TABLES.`,
+        `CRITICAL: No suitable table found for dealer ${dealer.name} (ID: ${dealer.id}) in slot ${currentSlot.formattedTime}. Assigning ERROR_NO_TABLES. Punished: ${state[dealer.id].isUnderPunishment}`,
       )
       slotAssignments[dealer.id] = "ERROR_NO_TABLES"
     }
@@ -259,24 +335,24 @@ function generateSlot(
 
   // 5. Finalize assignments for the slot and update dealer states
   schedule[currentSlot.time] = slotAssignments
-  const currentSlotIndex = timeSlots.findIndex((ts) => ts.time === currentSlot.time)
+  // const currentSlotIndex = timeSlots.findIndex(ts => ts.time === currentSlot.time); // Already calculated
 
   dealers.forEach((dealer) => {
     const assignment = slotAssignments[dealer.id]
     if (assignment) {
       updateDealerStateForSlot(dealer.id, assignment, currentSlotIndex, state)
     } else {
-      // This dealer was not assigned anything: not a planned break, not an additional break, not a table.
-      // This implies they are surplus for this slot (e.g., total dealers > tables + planned breaks + additional breaks).
-      // Treat them as being on break for state tracking.
-      if (previousAssignments[dealer.id] !== undefined) {
-        // Only log if they were present in the previous slot
+      // This dealer was not assigned anything. Treat as BREAK.
+      // This can happen if D > T + dealersOnBreakCount
+      if (!previousAssignments[dealer.id] || previousAssignments[dealer.id] !== "BREAK") {
+        // Only log if they weren't already on break or new to schedule
         console.warn(
-          `Dealer ${dealer.name} (ID: ${dealer.id}) was not assigned in slot ${currentSlot.formattedTime} and was present previously. Treating as BREAK for state.`,
+          `[generateSlot] Dealer ${dealer.name} (ID: ${dealer.id}) was not assigned in slot ${currentSlot.formattedTime}. Treating as BREAK. Punished: ${state[dealer.id].isUnderPunishment}`,
         )
       }
       updateDealerStateForSlot(dealer.id, "BREAK", currentSlotIndex, state)
-      schedule[currentSlot.time][dealer.id] = "BREAK" // Ensure they are marked as BREAK in schedule data
+      if (!schedule[currentSlot.time]) schedule[currentSlot.time] = {}
+      schedule[currentSlot.time][dealer.id] = "BREAK"
     }
   })
 }
@@ -288,62 +364,66 @@ function findBestTableForDealer(
   dealer: DealerWithTables,
   availableTables: Set<string>,
   state: Record<string, DealerAssignment>,
-  previousAssignments: Record<string, string> | null, // Назначенията от предходния слот
+  previousAssignments: Record<string, string> | null,
 ): string | null {
   const dealerState = state[dealer.id]
-  const lastWorkedTableByDealer = dealerState.lastTable // Последната маса, на която ТОЗИ дилър е работил (може да е от преди няколко слота, ако е бил в почивка)
-  const tableWorkedInPrevSlotByDealer = previousAssignments ? previousAssignments[dealer.id] : null // Масата, на която е бил в ПРЕДНИЯ слот
+  const lastWorkedTableByDealer = dealerState.lastTable
+  const tableWorkedInPrevSlotByDealer = previousAssignments ? previousAssignments[dealer.id] : null
 
   const scoredTables: { table: string; score: number }[] = []
 
   for (const table of availableTables) {
-    // Абсолютно правило: НЕ може да е същата маса като в ПРЕДНИЯ слот, ако е работил тогава
     if (
       tableWorkedInPrevSlotByDealer &&
       table === tableWorkedInPrevSlotByDealer &&
       tableWorkedInPrevSlotByDealer !== "BREAK"
     ) {
-      continue // Пропускаме тази маса
+      continue
     }
 
-    let score = 1000 // Базова висока оценка
+    let score = 1000
 
-    // Наказание за скорошно работени маси от историята
     dealerState.tableHistory.forEach((historicalTable, index) => {
       if (table === historicalTable) {
-        score -= 200 / (index + 1) // По-голямо наказание за по-скорошни
+        score -= 200 / (index + 1)
       }
     })
 
-    // Малък бонус, ако масата е от тип, на който дилърът може да работи, но не е в историята му скоро
     if (!dealerState.tableHistory.includes(table)) {
       score += 50
     }
 
-    // Бонус, ако масата е различна от последната работена от дилъра (lastTable)
     if (lastWorkedTableByDealer && table !== lastWorkedTableByDealer) {
       score += 20
     }
 
+    // Ensure punished dealers don't get stuck if all tables are "bad" for them by history
+    // Their need to work outweighs table rotation variety during punishment.
+    if (dealerState.isUnderPunishment && !dealerState.hasCompletedPunishment) {
+      // If score is too low due to history, give it a minimum positive score to be considered
+      if (score < 100 && availableTables.size === 1)
+        score = 100 // Ensure they get the last table
+      else if (score < 100) score += 50 // Boost score slightly
+    }
+
     if (score > 0) {
-      // Добавяме само ако има положителен резултат след наказанията
       scoredTables.push({ table, score })
     }
   }
 
   if (scoredTables.length === 0) {
-    // Fallback: ако всички налични маси са силно наказани (напр. всички са били работени много скоро)
-    // Взимаме първата налична, която НЕ Е същата като в предния слот
     const fallbackCandidates = Array.from(availableTables).filter(
       (t) =>
-        tableWorkedInPrevSlotByDealer &&
-        t !== tableWorkedInPrevSlotByDealer &&
-        tableWorkedInPrevSlotByDealer !== "BREAK",
+        !(
+          tableWorkedInPrevSlotByDealer &&
+          t === tableWorkedInPrevSlotByDealer &&
+          tableWorkedInPrevSlotByDealer !== "BREAK"
+        ),
     )
     if (fallbackCandidates.length > 0) return fallbackCandidates[0]
-    return Array.from(availableTables)[0] || null // Абсолютен fallback
+    return Array.from(availableTables)[0] || null
   }
 
-  scoredTables.sort((a, b) => b.score - a.score) // Сортираме по най-висока оценка
+  scoredTables.sort((a, b) => b.score - a.score)
   return scoredTables[0].table
 }

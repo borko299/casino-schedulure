@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { format, parse } from "date-fns"
 import { Button } from "@/components/ui/button"
@@ -26,6 +26,7 @@ import type {
 } from "@/lib/types"
 import { supabase } from "@/lib/supabase-singleton"
 import { generateSchedule as generateScheduleAlgorithm } from "@/lib/schedule-generator"
+import { Spinner } from "@/components/ui/spinner" // Import Spinner
 
 type AbsenceReasonUi = "sick" | "injured" | "unauthorized" | "voluntary" | "break"
 
@@ -48,15 +49,16 @@ interface DealerChangeFormData {
 }
 
 interface ManualAdjustment {
-  id: string // За key в React
+  id: string
   dealerId: string
-  dealerName: string // За по-лесно показване
+  dealerName: string
   type: "first" | "last"
   reason: FirstBreakReasonCode | LastBreakReasonCode
   reasonLabel: string
-  timestamp: string // Кога е направена промяната
-  rawSlotTimeKey: string // Добавено: Суровият ключ на времевия слот, напр. "0800"
-  adjustedSlotFormattedTime?: string // Променено име за яснота (преди adjustedSlotTime)
+  timestamp: string
+  rawSlotTimeKey: string
+  adjustedSlotFormattedTime?: string
+  isPunishmentApplied?: boolean
 }
 
 interface ScheduleTableProps {
@@ -72,13 +74,9 @@ const firstBreakReasonOptions: { value: FirstBreakReasonCode; label: string }[] 
 ]
 
 const lastBreakReasonOptions: { value: LastBreakReasonCode; label: string }[] = [
-  { value: "personal_commitment", label: "Личен ангажимент" },
   { value: "dealer_request", label: "По желание на дилъра" },
-  { value: "schedule_needs", label: "Нужди на графика" },
-  { value: "other", label: "Друга причина" },
 ]
 
-// ... (ScheduleTableComponent остава същия)
 function ScheduleTableComponent({ schedule, dealers }: ScheduleTableProps) {
   if (!schedule || !schedule.schedule_data) {
     return <p>No schedule data available.</p>
@@ -155,7 +153,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
-  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false)
+  // const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false) // Already exists
 
   const [absenceForm, setAbsenceForm] = useState<AbsenceFormData>({
     dealerId: "",
@@ -220,11 +218,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       first: firstBreakPreferences,
       last: lastBreakPreferences,
     }
-    // Simple deep comparison
     return JSON.stringify(currentPrefs) !== JSON.stringify(initialPreferences)
   }, [firstBreakPreferences, lastBreakPreferences, initialPreferences])
-
-  const tableOptions = [{ id: "break", value: "BREAK", label: "BREAK" }]
 
   const dealersToDisplayInTable = useMemo(() => {
     if (originalDealerIds.length > 0) {
@@ -257,6 +252,11 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     return reasonLabels[reason] || reason
   }
 
+  const getBreakReasonLabel = (reason: FirstBreakReasonCode | LastBreakReasonCode, type: "first" | "last"): string => {
+    const options = type === "first" ? firstBreakReasonOptions : lastBreakReasonOptions
+    return options.find((opt) => opt.value === reason)?.label || String(reason)
+  }
+
   const getCellClass = (assignment: string) => {
     const isBreak = assignment === "BREAK"
     let cellClass = "border p-2 text-center"
@@ -286,7 +286,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
             if (typeof timeSlotData === "object" && timeSlotData !== null) {
               Object.keys(timeSlotData).forEach((dealerId) => {
                 if (dealerId !== "_preferences" && dealerId !== "_manualAdjustments") {
-                  // Игнорираме и новия ключ
                   dealerIdsInInitialSchedule.add(dealerId)
                 }
               })
@@ -350,49 +349,47 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     })
   }
 
-  const applyManualBreak = (
-    dealerId: string,
-    type: "first" | "last",
-    reason: FirstBreakReasonCode | LastBreakReasonCode,
-  ) => {
-    const dealer = dealers.find((d) => d.id === dealerId)
-    if (!dealer) return
+  const applyManualBreak = useCallback(
+    (
+      dealerId: string,
+      type: "first" | "last",
+      reason: FirstBreakReasonCode | LastBreakReasonCode,
+      isPunishmentApplied = false,
+    ) => {
+      const dealer = dealers.find((d) => d.id === dealerId)
+      if (!dealer) return false
 
-    const currentSlots = generateTimeSlots(shiftType)
-    let targetSlotTime: string | undefined = undefined // Това ще бъде суровият ключ, напр. "0800"
-    const affectedSlotIndices: number[] = []
+      const currentSlots = generateTimeSlots(shiftType)
+      let targetSlotTimeKey: string | undefined = undefined
+      let affectedSlotIndex: number | undefined = undefined
 
-    setScheduleData((prevScheduleData) => {
-      const newScheduleData = JSON.parse(JSON.stringify(prevScheduleData)) // Deep copy
+      const newScheduleData = JSON.parse(JSON.stringify(scheduleData))
 
       if (type === "first") {
         for (let i = 0; i < currentSlots.length; i++) {
           const slotTimeKey = currentSlots[i].time
           if (newScheduleData[slotTimeKey]?.[dealerId] && newScheduleData[slotTimeKey][dealerId] !== "BREAK") {
-            targetSlotTime = slotTimeKey
-            affectedSlotIndices.push(i)
+            targetSlotTimeKey = slotTimeKey
+            affectedSlotIndex = i
             break
           }
         }
       } else {
-        // type === "last"
         for (let i = currentSlots.length - 1; i >= 0; i--) {
           const slotTimeKey = currentSlots[i].time
           if (newScheduleData[slotTimeKey]?.[dealerId] && newScheduleData[slotTimeKey][dealerId] !== "BREAK") {
-            targetSlotTime = slotTimeKey
-            affectedSlotIndices.push(i)
+            targetSlotTimeKey = slotTimeKey
+            affectedSlotIndex = i
             break
           }
         }
       }
 
-      if (targetSlotTime) {
-        // Прилагаме промяната към всички засегнати слотове (макар тук да е само един)
-        affectedSlotIndices.forEach((index) => {
-          const slotTimeToChange = currentSlots[index].time // Суров ключ
-          if (!newScheduleData[slotTimeToChange]) newScheduleData[slotTimeToChange] = {}
-          newScheduleData[slotTimeToChange][dealerId] = "BREAK"
-        })
+      if (targetSlotTimeKey && affectedSlotIndex !== undefined) {
+        const slotTimeToChange = currentSlots[affectedSlotIndex].time
+        if (!newScheduleData[slotTimeToChange]) newScheduleData[slotTimeToChange] = {}
+        newScheduleData[slotTimeToChange][dealerId] = "BREAK"
+        setScheduleData(newScheduleData)
 
         const reasonOption =
           type === "first"
@@ -407,73 +404,110 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
           reason,
           reasonLabel: reasonOption?.label || String(reason),
           timestamp: new Date().toISOString(),
-          rawSlotTimeKey: targetSlotTime, // Запазваме суровия ключ
-          adjustedSlotFormattedTime: targetSlotTime // Форматираното време за показване в лога
-            ? currentSlots.find((s) => s.time === targetSlotTime)?.formattedTime
-            : undefined,
+          rawSlotTimeKey: targetSlotTimeKey,
+          adjustedSlotFormattedTime: currentSlots[affectedSlotIndex].formattedTime,
+          isPunishmentApplied,
         }
         setManualAdjustments((prev) => [...prev, newAdjustment])
         toast.success(
-          `${dealer.name} - ${type === "first" ? "първа" : "последна"} почивка е приложена в ${newAdjustment.adjustedSlotFormattedTime || newAdjustment.rawSlotTimeKey}. Графикът е обновен.`,
+          `${dealer.name} - ${type === "first" ? "първа" : "последна"} почивка е приложена в ${newAdjustment.adjustedSlotFormattedTime}. Графикът е обновен.`,
         )
+        return true
       } else {
         toast.warn(
           `Не е намерен работен слот за ${dealer.name}, за да се приложи ${type === "first" ? "първа" : "последна"} почивка.`,
         )
+        return false
       }
-      return newScheduleData
-    })
-  }
+    },
+    [dealers, scheduleData, shiftType],
+  )
 
-  const handleFirstBreakPreferenceChange = (dealerId: string, checked: boolean, reason: FirstBreakReasonCode) => {
+  const handleFirstBreakPreferenceChange = (
+    dealerId: string,
+    checked: boolean,
+    reason: FirstBreakReasonCode,
+    applyPunishment?: boolean,
+  ) => {
     const dealer = dealers.find((d) => d.id === dealerId)
     if (!dealer) return
 
     if (checked) {
-      applyManualBreak(dealerId, "first", reason)
+      const newPreference: DealerBreakPreference = {
+        dealerId,
+        reason,
+      }
+      if (reason === "late_for_table" && applyPunishment) {
+        newPreference.punishment = { isActive: true, tablesToWork: 4 }
+        toast.info(
+          `${dealer.name} е маркиран за първа почивка като "Закъснял" с наказание (4 маси). Промяната ще се отрази при регенериране или запазване и презареждане на графика.`,
+        )
+      } else {
+        applyManualBreak(dealerId, "first", reason)
+      }
+
       setFirstBreakPreferences((prev) => {
         const existingPrefIndex = prev.findIndex((p) => p.dealerId === dealerId)
         if (existingPrefIndex !== -1) {
           const updatedPrefs = [...prev]
-          updatedPrefs[existingPrefIndex].reason = reason
+          updatedPrefs[existingPrefIndex] = newPreference
           return updatedPrefs
         }
-        return [...prev, { dealerId, reason }]
+        return [...prev, newPreference]
       })
       setLastBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealerId))
     } else {
       setFirstBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealerId))
+      const existingPref = firstBreakPreferences.find((p) => p.dealerId === dealerId)
+      if (!existingPref?.punishment?.isActive) {
+        const currentSlots = generateTimeSlots(shiftType)
+        let breakRevertedInSchedule = false
+        let revertedSlotFormattedTime = ""
+        let revertedRawSlotKey = ""
 
-      const currentSlots = generateTimeSlots(shiftType)
-      let breakRevertedInSchedule = false
-      let revertedSlotFormattedTime = ""
-      let revertedRawSlotKey = ""
-
-      setScheduleData((prevScheduleData) => {
-        const newScheduleData = JSON.parse(JSON.stringify(prevScheduleData))
-        for (let i = 0; i < currentSlots.length; i++) {
-          const slotTimeKey = currentSlots[i].time
-          if (newScheduleData[slotTimeKey]?.[dealerId] === "BREAK") {
-            newScheduleData[slotTimeKey][dealerId] = "-"
-            revertedSlotFormattedTime = currentSlots[i].formattedTime
-            revertedRawSlotKey = slotTimeKey
-            breakRevertedInSchedule = true
-            break
+        setScheduleData((prevScheduleData) => {
+          const newScheduleData = JSON.parse(JSON.stringify(prevScheduleData))
+          for (let i = 0; i < currentSlots.length; i++) {
+            const slotTimeKey = currentSlots[i].time
+            const manualAdjustmentLog = manualAdjustments.find(
+              (adj) =>
+                adj.dealerId === dealerId &&
+                adj.type === "first" &&
+                adj.rawSlotTimeKey === slotTimeKey &&
+                !adj.isPunishmentApplied,
+            )
+            if (newScheduleData[slotTimeKey]?.[dealerId] === "BREAK" && manualAdjustmentLog) {
+              newScheduleData[slotTimeKey][dealerId] = "-"
+              revertedSlotFormattedTime = currentSlots[i].formattedTime
+              revertedRawSlotKey = slotTimeKey
+              breakRevertedInSchedule = true
+              break
+            }
           }
-        }
-        return newScheduleData
-      })
+          return newScheduleData
+        })
 
-      if (breakRevertedInSchedule) {
-        setManualAdjustments((prevAdj) =>
-          prevAdj.filter(
-            (adj) => !(adj.dealerId === dealerId && adj.type === "first" && adj.rawSlotTimeKey === revertedRawSlotKey),
-          ),
-        )
-        toast.info(`${dealer.name} - премахната първа почивка от ${revertedSlotFormattedTime}. Слотът е изчистен.`)
+        if (breakRevertedInSchedule) {
+          setManualAdjustments((prevAdj) =>
+            prevAdj.filter(
+              (adj) =>
+                !(
+                  adj.dealerId === dealerId &&
+                  adj.type === "first" &&
+                  adj.rawSlotTimeKey === revertedRawSlotKey &&
+                  !adj.isPunishmentApplied
+                ),
+            ),
+          )
+          toast.info(`${dealer.name} - премахната първа почивка от ${revertedSlotFormattedTime}. Слотът е изчистен.`)
+        } else {
+          toast.info(
+            `Премахнато предпочитание за първа почивка за ${dealer.name}. Не е намерена активна ръчно приложена почивка за премахване. Ако е било с наказание, промяната ще се отрази при регенерация.`,
+          )
+        }
       } else {
         toast.info(
-          `Премахнато предпочитание за първа почивка за ${dealer.name}. Не е намерена активна почивка за премахване в графика.`,
+          `Премахнато предпочитание за първа почивка (с наказание) за ${dealer.name}. Промяната ще се отрази при регенериране на графика.`,
         )
       }
     }
@@ -497,7 +531,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       setFirstBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealerId))
     } else {
       setLastBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealerId))
-
       const currentSlots = generateTimeSlots(shiftType)
       let breakRevertedInSchedule = false
       let revertedSlotFormattedTime = ""
@@ -507,7 +540,10 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         const newScheduleData = JSON.parse(JSON.stringify(prevScheduleData))
         for (let i = currentSlots.length - 1; i >= 0; i--) {
           const slotTimeKey = currentSlots[i].time
-          if (newScheduleData[slotTimeKey]?.[dealerId] === "BREAK") {
+          const manualAdjustmentLog = manualAdjustments.find(
+            (adj) => adj.dealerId === dealerId && adj.type === "last" && adj.rawSlotTimeKey === slotTimeKey,
+          )
+          if (newScheduleData[slotTimeKey]?.[dealerId] === "BREAK" && manualAdjustmentLog) {
             newScheduleData[slotTimeKey][dealerId] = "-"
             revertedSlotFormattedTime = currentSlots[i].formattedTime
             revertedRawSlotKey = slotTimeKey
@@ -527,14 +563,13 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         toast.info(`${dealer.name} - премахната последна почивка от ${revertedSlotFormattedTime}. Слотът е изчистен.`)
       } else {
         toast.info(
-          `Премахнато предпочитание за последна почивка за ${dealer.name}. Не е намерена активна почивка за премахване в графика.`,
+          `Премахнато предпочитание за последна почивка за ${dealer.name}. Не е намерена активна ръчно приложена почивка за премахване.`,
         )
       }
     }
   }
 
   const executeSave = async () => {
-    setShowRegenerateConfirm(false)
     if (!date) {
       toast.error("Please select a date")
       return
@@ -542,20 +577,19 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     setIsSubmitting(true)
 
     try {
-      const dataToSave = { ...scheduleData }
+      const dataToSave: ScheduleData = { ...scheduleData }
       dataToSave._preferences = {
-        // Запазваме списъка с избрани предпочитания
         firstBreakPreferences,
         lastBreakPreferences,
       }
-      dataToSave._manualAdjustments = manualAdjustments // Запазваме лога на ръчните промени
+      dataToSave._manualAdjustments = manualAdjustments
 
       const { error } = await supabase
         .from("schedules")
         .update({
           date: format(date, "yyyy-MM-dd"),
           shift_type: shiftType,
-          schedule_data: dataToSave, // scheduleData вече е променено от applyManualBreak
+          schedule_data: dataToSave,
           absent_dealers: absentDealers,
         })
         .eq("id", params.id)
@@ -563,13 +597,10 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       if (error) throw error
 
       toast.success(`Schedule saved successfully`)
-      // Update initial preferences to match the saved state
       setInitialPreferences({
         first: firstBreakPreferences,
         last: lastBreakPreferences,
       })
-      // No need to push, user stays on the page to see changes
-      // router.push(`/schedules/${params.id}`);
     } catch (error: any) {
       toast.error(`Error saving schedule: ${error.message}`)
     } finally {
@@ -581,50 +612,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     executeSave()
   }
 
-  const generatePartialSchedule = async (
-    dealers: Dealer[],
-    timeSlots: { time: string; formattedTime: string }[],
-    shiftType: "day" | "night",
-    preferences?: { firstBreakDealers: string[]; lastBreakDealers: string[] },
-  ): Promise<ScheduleData> => {
-    try {
-      // Create a temporary shift type that matches our partial time slots
-      // We'll use the existing algorithm but only take the slots we need
-      const fullSchedule = await generateScheduleAlgorithm(dealers, shiftType, supabase, preferences)
-
-      // Extract only the time slots we need
-      const partialSchedule: ScheduleData = {}
-      timeSlots.forEach((slot, index) => {
-        // Map our partial slots to the full schedule slots
-        const fullTimeSlots = generateTimeSlots(shiftType)
-        const correspondingFullSlot = fullTimeSlots[index]
-
-        if (correspondingFullSlot && fullSchedule[correspondingFullSlot.time]) {
-          partialSchedule[slot.time] = fullSchedule[correspondingFullSlot.time]
-        } else {
-          // Initialize empty slot if no corresponding slot found
-          partialSchedule[slot.time] = {}
-          dealers.forEach((dealer) => {
-            partialSchedule[slot.time][dealer.id] = "BREAK"
-          })
-        }
-      })
-
-      return partialSchedule
-    } catch (error) {
-      console.error("Error generating partial schedule:", error)
-      // Return empty schedule on error
-      const emptySchedule: ScheduleData = {}
-      timeSlots.forEach((slot) => {
-        emptySchedule[slot.time] = {}
-        dealers.forEach((dealer) => {
-          emptySchedule[slot.time][dealer.id] = "BREAK"
-        })
-      })
-      return emptySchedule
-    }
-  }
-
+  const [isProcessingAbsence, setIsProcessingAbsence] = useState(false)
   const handleMarkAbsent = async () => {
     const { dealerId, startTime, reason } = absenceForm
     if (!dealerId || !startTime) {
@@ -632,6 +620,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       return
     }
 
+    setIsProcessingAbsence(true) // Start spinner for this specific action
     setIsPreviewingAbsence(true)
     try {
       const timeSlots = generateTimeSlots(shiftType)
@@ -640,13 +629,12 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       if (leaveTimeIndex === -1) {
         toast.error("Invalid start time")
         setIsPreviewingAbsence(false)
+        setIsProcessingAbsence(false)
         return
       }
 
-      // Create a copy of current schedule data
       const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
 
-      // Mark dealer as BREAK from the specified time onwards
       for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
         const currentSlot = timeSlots[i].time
         if (updatedScheduleData[currentSlot]) {
@@ -654,7 +642,6 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         }
       }
 
-      // Get remaining active dealers (excluding the one leaving)
       const remainingDealers = dealers
         .filter((d) => d.id !== dealerId && originalDealerIds.includes(d.id))
         .map((d) => ({
@@ -665,38 +652,29 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       if (remainingDealers.length === 0) {
         toast.error("No remaining dealers to cover the schedule")
         setIsPreviewingAbsence(false)
+        setIsProcessingAbsence(false)
         return
       }
 
-      // Generate new schedule for the remaining time slots using the normal algorithm
       const remainingTimeSlots = timeSlots.slice(leaveTimeIndex)
-
-      // Create preferences for the partial schedule generation
-      const partialPreferences = {
-        firstBreakDealers: firstBreakPreferences
-          .filter((p) => remainingDealers.some((d) => d.id === p.dealerId))
-          .map((p) => p.dealerId),
-        lastBreakDealers: lastBreakPreferences
-          .filter((p) => remainingDealers.some((d) => d.id === p.dealerId))
-          .map((p) => p.dealerId),
-      }
-
-      // Generate new partial schedule from the leave time onwards
-      const partialScheduleData = await generateScheduleAlgorithm(
-        remainingDealers,
-        shiftType,
-        supabase,
-        partialPreferences,
+      const currentFirstBreakPrefs = firstBreakPreferences.filter((pref) =>
+        remainingDealers.some((d) => d.id === pref.dealerId),
+      )
+      const currentLastBreakPrefs = lastBreakPreferences.filter((pref) =>
+        remainingDealers.some((d) => d.id === pref.dealerId),
       )
 
-      // Apply the new partial schedule to the remaining time slots
+      const partialScheduleData = await generateScheduleAlgorithm(remainingDealers, shiftType, supabase, {
+        firstBreakPreferences: currentFirstBreakPrefs,
+        lastBreakPreferences: currentLastBreakPrefs,
+      })
+
       for (let i = leaveTimeIndex; i < timeSlots.length; i++) {
         const currentSlot = timeSlots[i].time
         const partialSlotIndex = i - leaveTimeIndex
         const partialSlotTime = remainingTimeSlots[partialSlotIndex]?.time
 
         if (partialSlotTime && partialScheduleData[partialSlotTime]) {
-          // Copy assignments from partial schedule for remaining dealers
           remainingDealers.forEach((dealer) => {
             if (partialScheduleData[partialSlotTime][dealer.id]) {
               updatedScheduleData[currentSlot][dealer.id] = partialScheduleData[partialSlotTime][dealer.id]
@@ -715,31 +693,33 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       console.error("Error generating preview:", error)
       toast.error(`Error generating preview: ${error.message}`)
       setIsPreviewingAbsence(false)
+    } finally {
+      setIsProcessingAbsence(false) // Stop spinner for this specific action
     }
   }
 
+  const [isProcessingExtraBreak, setIsProcessingExtraBreak] = useState(false)
   const handleExtraBreak = async () => {
     const { dealerId, timeSlot, reason } = extraBreakForm
     if (!dealerId || !timeSlot || !reason) {
       toast.error("Please fill all fields")
       return
     }
-
+    setIsProcessingExtraBreak(true)
     setIsPreviewingExtraBreak(true)
     try {
-      const timeSlots = generateTimeSlots(shiftType)
+      // ... (rest of the logic remains the same)
       const dealer = dealers.find((d) => d.id === dealerId)
       if (!dealer) {
         toast.error("Dealer not found")
         setIsPreviewingExtraBreak(false)
+        setIsProcessingExtraBreak(false)
         return
       }
 
-      // Create a copy of current schedule data
       const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
-
-      // Check if dealer is already on break at this time
       const currentAssignment = updatedScheduleData[timeSlot]?.[dealerId]
+
       if (currentAssignment === "BREAK") {
         setExtraBreakPreviewData({
           dealerId,
@@ -749,10 +729,10 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
           isValid: false,
           message: "Дилърът вече е на почивка в този слот.",
         })
+        setIsProcessingExtraBreak(false)
         return
       }
 
-      // Find who can cover this dealer's table
       const tableToReplace = currentAssignment
       if (!tableToReplace || tableToReplace === "-") {
         setExtraBreakPreviewData({
@@ -763,10 +743,10 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
           isValid: false,
           message: "Дилърът не работи на маса в този слот.",
         })
+        setIsProcessingExtraBreak(false)
         return
       }
 
-      // Find available dealers who can work this table
       const availableDealers = dealersToDisplayInTable.filter((d) => {
         if (d.id === dealerId) return false
         if (!d.available_tables.includes(tableToReplace)) return false
@@ -783,13 +763,11 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
           isValid: false,
           message: `Няма налични дилъри, които могат да поемат маса ${tableToReplace}.`,
         })
+        setIsProcessingExtraBreak(false)
         return
       }
 
-      // Choose the first available dealer (could be improved with better logic)
       const coveringDealer = availableDealers[0]
-
-      // Apply the change
       updatedScheduleData[timeSlot][dealerId] = "BREAK"
       updatedScheduleData[timeSlot][coveringDealer.id] = tableToReplace
 
@@ -806,9 +784,12 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       console.error("Error generating extra break preview:", error)
       toast.error(`Error generating preview: ${error.message}`)
       setIsPreviewingExtraBreak(false)
+    } finally {
+      setIsProcessingExtraBreak(false)
     }
   }
 
+  const [isProcessingDealerChange, setIsProcessingDealerChange] = useState(false)
   const handleDealerChange = async () => {
     const { dealer1Id, dealer2Id, timeSlot } = dealerChangeForm
     if (!dealer1Id || !dealer2Id || !timeSlot) {
@@ -820,28 +801,26 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       toast.error("Please select different dealers")
       return
     }
-
+    setIsProcessingDealerChange(true)
     setIsPreviewingDealerChange(true)
     try {
+      // ... (rest of the logic remains the same)
       const dealer1 = dealers.find((d) => d.id === dealer1Id)
       const dealer2 = dealers.find((d) => d.id === dealer2Id)
       if (!dealer1 || !dealer2) {
         toast.error("Dealers not found")
         setIsPreviewingDealerChange(false)
+        setIsProcessingDealerChange(false)
         return
       }
 
-      // Create a copy of current schedule data
       const updatedScheduleData = JSON.parse(JSON.stringify(scheduleData))
-
       const dealer1Assignment = updatedScheduleData[timeSlot]?.[dealer1Id]
       const dealer2Assignment = updatedScheduleData[timeSlot]?.[dealer2Id]
-
       const warnings: string[] = []
       let isValid = true
       let message = ""
 
-      // Check if both dealers are working (not on break)
       if (dealer1Assignment === "BREAK") {
         warnings.push(`${dealer1.name} е на почивка в този слот`)
         isValid = false
@@ -850,29 +829,26 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         warnings.push(`${dealer2.name} е на почивка в този слот`)
         isValid = false
       }
-
       if (dealer1Assignment === "-" || dealer2Assignment === "-") {
         warnings.push("Един от дилърите не работи в този слот")
         isValid = false
       }
 
-      // Check if dealers can work each other's tables
       if (isValid) {
-        if (!dealer1.available_tables.includes(dealer2Assignment)) {
+        if (dealer2Assignment && !dealer1.available_tables.includes(dealer2Assignment)) {
           warnings.push(`${dealer1.name} не може да работи на маса ${dealer2Assignment}`)
           isValid = false
         }
-        if (!dealer2.available_tables.includes(dealer1Assignment)) {
+        if (dealer1Assignment && !dealer2.available_tables.includes(dealer1Assignment)) {
           warnings.push(`${dealer2.name} не може да работи на маса ${dealer1Assignment}`)
           isValid = false
         }
       }
 
       if (isValid) {
-        // Apply the swap
         updatedScheduleData[timeSlot][dealer1Id] = dealer2Assignment
         updatedScheduleData[timeSlot][dealer2Id] = dealer1Assignment
-        message = `Успешна смяна: ${dealer1.name} ще работи на ${dealer2Assignment}, ${dealer2.name} ще работи на ${dealer1Assignment}`
+        message = `Успешна смяна: ${dealer1.name} ще работи на ${dealer2Assignment || "-"}, ${dealer2.name} ще работи на ${dealer1Assignment || "-"}`
       } else {
         message = "Смяната не е възможна поради следните проблеми:"
       }
@@ -890,6 +866,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       console.error("Error generating dealer change preview:", error)
       toast.error(`Error generating preview: ${error.message}`)
       setIsPreviewingDealerChange(false)
+    } finally {
+      setIsProcessingDealerChange(false)
     }
   }
 
@@ -903,7 +881,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         reason: previewData.reason,
       },
     ])
-    setScheduleData(previewData.scheduleData) // Прилагаме промените от handleDealerLeaving
+    setScheduleData(previewData.scheduleData)
     setAbsenceForm({ dealerId: "", startTime: "", reason: "sick" })
     setPreviewData(null)
     setIsPreviewingAbsence(false)
@@ -947,9 +925,11 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     const newAbsentDealers = [...absentDealers]
     newAbsentDealers.splice(index, 1)
     setAbsentDealers(newAbsentDealers)
-    // TODO: Трябва да се ре-генерира графика или да се върне дилъра ръчно
     toast.info("Dealer removed from absent list. Schedule might need regeneration or manual adjustment.")
   }
+
+  // const [isRegenerating, setIsRegenerating] = useState(false); // Already defined
+  const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false)
 
   const runRegenerationForAll = async () => {
     if (!schedule) {
@@ -969,8 +949,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
       }
 
       const generatorPreferences = {
-        firstBreakDealers: firstBreakPreferences.map((p) => p.dealerId),
-        lastBreakDealers: lastBreakPreferences.map((p) => p.dealerId),
+        firstBreakPreferences,
+        lastBreakPreferences,
       }
 
       const newScheduleData = await generateScheduleAlgorithm(activeDealers, shiftType, supabase, generatorPreferences)
@@ -979,7 +959,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         firstBreakPreferences,
         lastBreakPreferences,
       }
-      newScheduleData._manualAdjustments = [] // Изчистваме ръчните корекции при пълна регенерация
+      newScheduleData._manualAdjustments = []
       setManualAdjustments([])
 
       const currentLocalTimeSlots = generateTimeSlots(shiftType)
@@ -1006,8 +986,9 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
 
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <p>Loading schedule...</p>
+      <div className="flex flex-col justify-center items-center h-64 space-y-4">
+        <Spinner className="h-12 w-12 text-primary" />
+        <p className="text-lg text-muted-foreground">Loading schedule...</p>
       </div>
     )
   }
@@ -1025,7 +1006,46 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold">Edit Schedule</h1>
+        <Button
+          onClick={() => setShowRegenerateConfirm(true)}
+          variant="outline"
+          disabled={isRegenerating || isSubmitting}
+        >
+          {isRegenerating ? (
+            <div className="flex items-center">
+              <Spinner className="mr-2 h-4 w-4" />
+              Regenerating...
+            </div>
+          ) : (
+            "Regenerate Full Schedule"
+          )}
+        </Button>
       </div>
+      {showRegenerateConfirm && (
+        <Card className="border-yellow-500">
+          <CardHeader>
+            <CardTitle className="text-yellow-600">Confirm Regeneration</CardTitle>
+            <CardDescription>
+              Are you sure you want to regenerate the entire schedule? This will apply all current break preferences and
+              absences, and will clear any manual table assignments.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex justify-end space-x-2">
+            <Button variant="outline" onClick={() => setShowRegenerateConfirm(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                runRegenerationForAll()
+                setShowRegenerateConfirm(false)
+              }}
+            >
+              Yes, Regenerate
+            </Button>
+          </CardContent>
+        </Card>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Schedule Settings</CardTitle>
@@ -1078,8 +1098,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
             <CardHeader>
               <CardTitle>Schedule Assignments</CardTitle>
               <CardDescription>
-                Edit dealer assignments. Manual break preferences are applied directly. Use actions tab to apply
-                preferences and manage absences.
+                Edit dealer assignments. Manual break preferences are applied directly unless a punishment is active.
+                Use actions tab for advanced modifications.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -1132,6 +1152,53 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                   </tbody>
                 </table>
               </div>
+              {(firstBreakPreferences.length > 0 || lastBreakPreferences.length > 0) && (
+                <div className="mt-6">
+                  <h3 className="text-lg font-medium mb-2">Active Break Preferences</h3>
+                  <div className="border rounded-md overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-muted">
+                        <tr>
+                          <th className="p-2 text-left">Dealer</th>
+                          <th className="p-2 text-left">Break Type</th>
+                          <th className="p-2 text-left">Reason</th>
+                          <th className="p-2 text-left">Punishment</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {firstBreakPreferences.map((pref) => {
+                          const dealer = dealers.find((d) => d.id === pref.dealerId)
+                          return (
+                            <tr key={`first-${pref.dealerId}`} className="border-t">
+                              <td className="p-2">{dealer?.name || pref.dealerId}</td>
+                              <td className="p-2">First Break</td>
+                              <td className="p-2">
+                                {getBreakReasonLabel(pref.reason as FirstBreakReasonCode, "first")}
+                              </td>
+                              <td className="p-2">
+                                {pref.reason === "late_for_table" && pref.punishment?.isActive
+                                  ? `Да (${pref.punishment.tablesToWork} маси)`
+                                  : "Не"}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        {lastBreakPreferences.map((pref) => {
+                          const dealer = dealers.find((d) => d.id === pref.dealerId)
+                          return (
+                            <tr key={`last-${pref.dealerId}`} className="border-t">
+                              <td className="p-2">{dealer?.name || pref.dealerId}</td>
+                              <td className="p-2">Last Break</td>
+                              <td className="p-2">{getBreakReasonLabel(pref.reason as LastBreakReasonCode, "last")}</td>
+                              <td className="p-2">N/A</td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
               {manualAdjustments.length > 0 && (
                 <div className="mt-6">
                   <h3 className="text-lg font-medium mb-2">Log of Manual Break Adjustments</h3>
@@ -1144,6 +1211,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                           <th className="p-2 text-left">Reason</th>
                           <th className="p-2 text-left">Adjusted Slot</th>
                           <th className="p-2 text-left">Timestamp</th>
+                          <th className="p-2 text-left">Punishment Related</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1154,6 +1222,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                             <td className="p-2">{adj.reasonLabel}</td>
                             <td className="p-2">{adj.adjustedSlotFormattedTime || "N/A"}</td>
                             <td className="p-2">{format(new Date(adj.timestamp), "Pp")}</td>
+                            <td className="p-2">{adj.isPunishmentApplied ? "Да" : "Не"}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -1170,8 +1239,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
             <CardHeader>
               <CardTitle>Schedule Actions</CardTitle>
               <CardDescription>
-                Apply break preferences, manage absent dealers, extra breaks, and dealer changes. Changes are applied
-                immediately to the current schedule.
+                Apply break preferences, manage absent dealers, extra breaks, and dealer changes. Punishments for
+                lateness are applied on schedule regeneration.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-8">
@@ -1179,50 +1248,89 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
               <div className="border rounded-md">
                 <div className="p-3 border-b bg-muted/50">
                   <h3 className="font-medium">First Break Preferences</h3>
-                  <p className="text-sm text-muted-foreground">Mark dealers for first working slot break</p>
+                  <p className="text-sm text-muted-foreground">
+                    Mark dealers for first working slot break. Punishment for lateness is applied on regeneration.
+                  </p>
                 </div>
                 <div className="p-3 max-h-[200px] overflow-y-auto space-y-3">
                   {dealersToDisplayInTable.length > 0 ? (
                     dealersToDisplayInTable.map((dealer) => {
                       const preference = firstBreakPreferences.find((p) => p.dealerId === dealer.id)
                       const isChecked = !!preference
+                      const currentReason = (preference?.reason as FirstBreakReasonCode) || "dealer_request"
+                      const isPunishmentActive = !!(
+                        currentReason === "late_for_table" && preference?.punishment?.isActive
+                      )
+
                       return (
-                        <div key={dealer.id} className="flex items-center space-x-3 p-2 hover:bg-muted/50 rounded-md">
-                          <Checkbox
-                            id={`first-break-${dealer.id}`}
-                            checked={isChecked}
-                            onCheckedChange={(checked) =>
-                              handleFirstBreakPreferenceChange(
-                                dealer.id,
-                                checked === true,
-                                (checked === true
-                                  ? preference?.reason || "dealer_request"
-                                  : preference?.reason) as FirstBreakReasonCode,
-                              )
-                            }
-                          />
-                          <Label htmlFor={`first-break-${dealer.id}`} className="flex-1 cursor-pointer">
-                            {dealer.name}{" "}
-                            {dealer.nickname && <span className="text-muted-foreground">({dealer.nickname})</span>}
-                          </Label>
-                          {isChecked && (
-                            <Select
-                              value={preference.reason}
-                              onValueChange={(reason) =>
-                                handleFirstBreakPreferenceChange(dealer.id, true, reason as FirstBreakReasonCode)
-                              }
-                            >
-                              <SelectTrigger className="w-[200px] h-8">
-                                <SelectValue placeholder="Select reason" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {firstBreakReasonOptions.map((opt) => (
-                                  <SelectItem key={opt.value} value={opt.value}>
-                                    {opt.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                        <div key={`first-break-main-${dealer.id}`} className="p-2 hover:bg-muted/50 rounded-md">
+                          <div className="flex items-center space-x-3">
+                            <Checkbox
+                              id={`first-break-${dealer.id}`}
+                              checked={isChecked}
+                              onCheckedChange={(checked) => {
+                                const reasonToUse =
+                                  isChecked && preference
+                                    ? (preference.reason as FirstBreakReasonCode)
+                                    : "dealer_request"
+                                handleFirstBreakPreferenceChange(
+                                  dealer.id,
+                                  checked === true,
+                                  reasonToUse,
+                                  reasonToUse === "late_for_table" ? isPunishmentActive : undefined,
+                                )
+                              }}
+                            />
+                            <Label htmlFor={`first-break-${dealer.id}`} className="flex-1 cursor-pointer">
+                              {dealer.name}{" "}
+                              {dealer.nickname && <span className="text-muted-foreground">({dealer.nickname})</span>}
+                            </Label>
+                            {isChecked && (
+                              <Select
+                                value={currentReason}
+                                onValueChange={(newReason) =>
+                                  handleFirstBreakPreferenceChange(
+                                    dealer.id,
+                                    true,
+                                    newReason as FirstBreakReasonCode,
+                                    newReason === "late_for_table" ? isPunishmentActive : undefined,
+                                  )
+                                }
+                              >
+                                <SelectTrigger className="w-[200px] h-8">
+                                  <SelectValue placeholder="Select reason" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {firstBreakReasonOptions.map((opt) => (
+                                    <SelectItem key={opt.value} value={opt.value}>
+                                      {opt.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </div>
+                          {isChecked && currentReason === "late_for_table" && (
+                            <div className="flex items-center space-x-3 mt-2 pl-8">
+                              <Checkbox
+                                id={`first-break-punish-${dealer.id}`}
+                                checked={isPunishmentActive}
+                                onCheckedChange={(punishChecked) =>
+                                  handleFirstBreakPreferenceChange(
+                                    dealer.id,
+                                    true,
+                                    "late_for_table",
+                                    punishChecked === true,
+                                  )
+                                }
+                              />
+                              <Label
+                                htmlFor={`first-break-punish-${dealer.id}`}
+                                className="text-sm text-muted-foreground cursor-pointer"
+                              >
+                                Накажи с 4 маси (прилага се при регенерация)
+                              </Label>
+                            </div>
                           )}
                         </div>
                       )
@@ -1245,7 +1353,10 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                       const preference = lastBreakPreferences.find((p) => p.dealerId === dealer.id)
                       const isChecked = !!preference
                       return (
-                        <div key={dealer.id} className="flex items-center space-x-3 p-2 hover:bg-muted/50 rounded-md">
+                        <div
+                          key={`last-break-main-${dealer.id}`}
+                          className="flex items-center space-x-3 p-2 hover:bg-muted/50 rounded-md"
+                        >
                           <Checkbox
                             id={`last-break-${dealer.id}`}
                             checked={isChecked}
@@ -1253,9 +1364,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                               handleLastBreakPreferenceChange(
                                 dealer.id,
                                 checked === true,
-                                (checked === true
-                                  ? preference?.reason || "dealer_request"
-                                  : preference?.reason) as LastBreakReasonCode,
+                                (preference?.reason as LastBreakReasonCode) || "dealer_request",
                               )
                             }
                           />
@@ -1265,7 +1374,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                           </Label>
                           {isChecked && (
                             <Select
-                              value={preference.reason}
+                              value={(preference?.reason as LastBreakReasonCode) || "dealer_request"}
                               onValueChange={(reason) =>
                                 handleLastBreakPreferenceChange(dealer.id, true, reason as LastBreakReasonCode)
                               }
@@ -1358,9 +1467,15 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                       <Button
                         variant="outline"
                         onClick={handleExtraBreak}
-                        disabled={!extraBreakForm.dealerId || !extraBreakForm.timeSlot || !extraBreakForm.reason}
+                        disabled={
+                          isProcessingExtraBreak ||
+                          !extraBreakForm.dealerId ||
+                          !extraBreakForm.timeSlot ||
+                          !extraBreakForm.reason
+                        }
                         className="w-full"
                       >
+                        {isProcessingExtraBreak ? <Spinner className="mr-2 h-4 w-4" /> : null}
                         Preview Extra Break
                       </Button>
                     </div>
@@ -1468,10 +1583,14 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                         variant="outline"
                         onClick={handleDealerChange}
                         disabled={
-                          !dealerChangeForm.dealer1Id || !dealerChangeForm.dealer2Id || !dealerChangeForm.timeSlot
+                          isProcessingDealerChange ||
+                          !dealerChangeForm.dealer1Id ||
+                          !dealerChangeForm.dealer2Id ||
+                          !dealerChangeForm.timeSlot
                         }
                         className="w-full"
                       >
+                        {isProcessingDealerChange ? <Spinner className="mr-2 h-4 w-4" /> : null}
                         Preview Dealer Change
                       </Button>
                     </div>
@@ -1586,8 +1705,9 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                     <Button
                       variant="outline"
                       onClick={handleMarkAbsent}
-                      disabled={!absenceForm.dealerId || !absenceForm.startTime}
+                      disabled={isProcessingAbsence || !absenceForm.dealerId || !absenceForm.startTime}
                     >
+                      {isProcessingAbsence ? <Spinner className="mr-2 h-4 w-4" /> : null}
                       Mark as Absent & Preview Reassignment
                     </Button>
                   </div>
@@ -1669,11 +1789,18 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         </TabsContent>
       </Tabs>
       <div className="flex justify-end space-x-2 mt-6">
-        <Button variant="outline" onClick={() => router.back()} disabled={isSubmitting}>
+        <Button variant="outline" onClick={() => router.back()} disabled={isSubmitting || isRegenerating}>
           Cancel
         </Button>
         <Button onClick={handleSaveClick} disabled={isSubmitting || isRegenerating}>
-          {isSubmitting ? "Saving..." : "Save Changes"}
+          {isSubmitting ? (
+            <div className="flex items-center">
+              <Spinner className="mr-2 h-4 w-4" />
+              Saving...
+            </div>
+          ) : (
+            "Save Changes"
+          )}
         </Button>
       </div>
     </div>

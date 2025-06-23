@@ -1,55 +1,65 @@
-import type { Dealer } from "@/lib/types"
+import type { Dealer, CasinoTable, SchedulePreferences, FirstBreakReasonCode, LastBreakReasonCode } from "@/lib/types"
 
-export type ShiftType = "day" | "night"
+export type { Dealer, CasinoTable, SchedulePreferences, FirstBreakReasonCode, LastBreakReasonCode }
 
-export interface TimeSlot {
-  time: string
-  formattedTime: string
+export interface DealerWithTables extends Dealer {
+  available_tables_count: number
+  // available_table_names: string[]; // Може да се добави, ако е нужно за оптимизации
 }
 
-export interface SchedulePreferences {
-  firstBreakDealers?: string[]
-  lastBreakDealers?: string[]
-}
-
-export interface DealerAssignment {
-  rotations: number // Брой работни ротации
-  breaks: number // Брой почивки
-  lastTable: string // Последната маса, на която е работил дилърът
-  lastTableIndex: number // Индекс на последното назначение на маса
-  assignedTables: Set<string> // Маси, на които е работил дилърът през цялата смяна
-  breakPositions: number[] // Позиции на почивките в графика
-  needsExtraRotation: boolean // Дали този дилър се нуждае от допълнителна ротация
-  targetRotations: number // Целеви брой ротации за този дилър
-  targetBreaks: number // Целеви брой почивки за този дилър
-
-  // Нови полета за правилото "поне две различни маси преди почивка"
-  tablesInCurrentWorkSegment: Set<string> // Уникални маси, отработени от последната почивка (или началото на смяната)
-  isFirstWorkSegmentOfShift: boolean // Вярно, ако дилърът все още не е имал почивка след първия си работен сегмент
+export interface TimeSlotData {
+  [dealerId: string]: string // table name or "BREAK"
 }
 
 export interface ScheduleData {
-  [timeSlot: string]: {
-    [dealerId: string]: string // име на маса или "BREAK"
+  [timeSlot: string]: TimeSlotData
+  _preferences?: {
+    firstBreakPreferences?: DealerBreakPreference[]
+    lastBreakPreferences?: DealerBreakPreference[]
+  }
+  _manualAdjustments?: any[]
+}
+
+export interface DealerBreakPreference {
+  dealerId: string
+  reason: FirstBreakReasonCode | LastBreakReasonCode
+  punishment?: {
+    isActive: boolean
+    tablesToWork: number
   }
 }
 
 export interface ScheduleParameters {
-  R: number // Брой ротации (24)
-  T: number // Брой маси
-  D: number // Брой дилъри
-  totalWorkSlots: number // Общ брой работни слотове
-  workSlotsPerDealer: number // Базов брой работни слотове на дилър
-  extraWorkSlots: number // Допълнителни работни слотове за разпределение
-  breakSlotsPerDealer: number // Базов брой почивки на дилър
+  R: number // Total rotation slots
+  T: number // Total unique tables
+  D: number // Total eligible dealers
+  totalWorkSlots: number
+  workSlotsPerDealer: number
+  extraWorkSlots: number
+  breakSlotsPerDealer: number
+  dealersOnBreakCount: number
 }
 
-export interface DealerWithTables extends Dealer {
-  available_tables: string[]
+export interface DealerAssignment {
+  rotations: number // Брой отработени ротации
+  breaks: number // Брой взети почивки
+  lastTable: string | null // Последна маса, на която е работил
+  assignedTables: Set<string> // Уникални маси, на които е работил
+  breakPositions: number[] // Индекси на слотовете, в които е бил в почивка
+  targetRotations: number // Целеви брой ротации
+  targetBreaks: number // Целеви брой почивки
+  slotsSinceLastBreak: number // Брой слотове от последната почивка
+  tableHistory: string[] // История на последните няколко маси
+  isReturningFromBreak: boolean // Дали се връща от почивка в текущия слот
+
+  // Punishment related fields
+  isUnderPunishment?: boolean
+  punishmentTablesWorked?: number
+  punishmentTargetTables?: number
+  hasCompletedPunishment?: boolean // To prevent re-punishing in the same shift if re-evaluated
 }
 
-export interface AbsenceInfo {
-  dealerId: string
-  startTime: string
-  reason: string
+export interface TimeSlot {
+  time: string
+  formattedTime: string
 }

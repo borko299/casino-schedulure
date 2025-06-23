@@ -144,6 +144,11 @@ export function ScheduleStatistics({
       topReportedTableName = topReportedTableEntry[1].name || "Неизвестна маса"
     }
 
+    const averageUniqueTables =
+      allDealerStats.length > 0
+        ? (allDealerStats.reduce((sum, stat) => sum + stat.uniqueTables, 0) / allDealerStats.length).toFixed(1)
+        : "0"
+
     return {
       totalWorkSlots,
       totalBreaks,
@@ -151,7 +156,8 @@ export function ScheduleStatistics({
       breaksRange: breaksRange.min === Number.POSITIVE_INFINITY ? { min: 0, max: 0 } : breaksRange,
       totalDailyReports: dailyReports.length,
       topReportedDealer: topReportedDealerName,
-      topReportedTable: topReportedTableName, // Added
+      topReportedTable: topReportedTableName,
+      averageUniqueTables, // Добави тази линия
     }
   }, [allDealerStats, dailyReports])
 
@@ -198,7 +204,7 @@ export function ScheduleStatistics({
               <div className="mb-6">
                 <h3 className="text-lg font-semibold mb-4">Общ преглед на смяната</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                     {" "}
                     {/* Adjusted for 5 cards */}
                     <StatCard
@@ -212,11 +218,16 @@ export function ScheduleStatistics({
                       icon={<Award className="h-6 w-6 text-yellow-500" />}
                       isText
                     />
-                    <StatCard // New card
+                    <StatCard
                       title="Маса с най-много репорти"
                       value={generalAnalysis.topReportedTable}
                       icon={<Table2 className="h-6 w-6 text-purple-500" />}
                       isText
+                    />
+                    <StatCard
+                      title="Средно уникални маси"
+                      value={generalAnalysis.averageUniqueTables}
+                      icon={<BarChartHorizontal className="h-6 w-6 text-green-500" />}
                     />
                     <StatCard
                       title="Баланс работни слотове"

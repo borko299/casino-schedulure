@@ -16,15 +16,16 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { cn } from "@/lib/utils"
-import type { Dealer } from "@/lib/types"
+import type { Dealer, DealerBreakPreference } from "@/lib/types" // Added DealerBreakPreference
 import { supabase } from "@/lib/supabase-singleton"
+import { Spinner } from "@/components/ui/spinner" // Import Spinner
 
 export default function GenerateSchedulePage() {
   const router = useRouter()
   const [dealers, setDealers] = useState<Dealer[]>([])
   const [selectedDealers, setSelectedDealers] = useState<string[]>([])
-  const [firstBreakDealers, setFirstBreakDealers] = useState<string[]>([])
-  const [lastBreakDealers, setLastBreakDealers] = useState<string[]>([])
+  const [firstBreakPreferences, setFirstBreakPreferences] = useState<DealerBreakPreference[]>([])
+  const [lastBreakPreferences, setLastBreakPreferences] = useState<DealerBreakPreference[]>([])
   const [searchQuery, setSearchQuery] = useState("")
   const [date, setDate] = useState<Date>(new Date())
   const [shiftType, setShiftType] = useState<"day" | "night">("day")
@@ -71,29 +72,27 @@ export default function GenerateSchedulePage() {
       setSelectedDealers([...selectedDealers, dealerId])
     } else {
       setSelectedDealers(selectedDealers.filter((id) => id !== dealerId))
-      // Също премахваме дилъра от преференциите, ако е бил избран там
-      setFirstBreakDealers(firstBreakDealers.filter((id) => id !== dealerId))
-      setLastBreakDealers(lastBreakDealers.filter((id) => id !== dealerId))
+      setFirstBreakPreferences(firstBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
+      setLastBreakPreferences(lastBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
     }
   }
 
-  const handleFirstBreakSelect = (dealerId: string, checked: boolean) => {
+  const handleFirstBreakPreferenceChange = (dealerId: string, checked: boolean) => {
     if (checked) {
-      setFirstBreakDealers([...firstBreakDealers, dealerId])
-      // Премахваме от последна почивка, ако е бил там
-      setLastBreakDealers(lastBreakDealers.filter((id) => id !== dealerId))
+      // Add with default reason, can be refined later if reasons are added here
+      setFirstBreakPreferences([...firstBreakPreferences, { dealerId, reason: "dealer_request" }])
+      setLastBreakPreferences(lastBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
     } else {
-      setFirstBreakDealers(firstBreakDealers.filter((id) => id !== dealerId))
+      setFirstBreakPreferences(firstBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
     }
   }
 
-  const handleLastBreakSelect = (dealerId: string, checked: boolean) => {
+  const handleLastBreakPreferenceChange = (dealerId: string, checked: boolean) => {
     if (checked) {
-      setLastBreakDealers([...lastBreakDealers, dealerId])
-      // Премахваме от първа почивка, ако е бил там
-      setFirstBreakDealers(firstBreakDealers.filter((id) => id !== dealerId))
+      setLastBreakPreferences([...lastBreakPreferences, { dealerId, reason: "dealer_request" }])
+      setFirstBreakPreferences(firstBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
     } else {
-      setLastBreakDealers(lastBreakDealers.filter((id) => id !== dealerId))
+      setLastBreakPreferences(lastBreakPreferences.filter((pref) => pref.dealerId !== dealerId))
     }
   }
 
@@ -113,23 +112,20 @@ export default function GenerateSchedulePage() {
     setIsSubmitting(true)
 
     try {
-      // Get selected dealers
       const selectedDealersData = dealers.filter((dealer) => selectedDealers.includes(dealer.id))
 
-      // Generate the schedule with preferences
       const scheduleData = await generateSchedule(selectedDealersData, shiftType, supabase, {
-        firstBreakDealers,
-        lastBreakDealers,
+        firstBreakPreferences, // Pass full preference objects
+        lastBreakPreferences,
       })
 
-      // Запазваме предпочитанията в schedule_data вместо в отделна колона
-      // Добавяме ги като специален ключ в обекта
+      // Store preferences within schedule_data
       scheduleData._preferences = {
-        firstBreakDealers,
-        lastBreakDealers,
+        firstBreakPreferences,
+        lastBreakPreferences,
       }
+      scheduleData._manualAdjustments = [] // Initialize as empty for new schedules
 
-      // Save to database
       const { data, error } = await supabase
         .from("schedules")
         .insert([
@@ -137,7 +133,6 @@ export default function GenerateSchedulePage() {
             date: format(date, "yyyy-MM-dd"),
             shift_type: shiftType,
             schedule_data: scheduleData,
-            // Премахваме preferences полето
           },
         ])
         .select()
@@ -146,7 +141,6 @@ export default function GenerateSchedulePage() {
 
       toast.success("Schedule generated successfully")
 
-      // Navigate to the newly created schedule if available
       if (data && data.length > 0) {
         router.push(`/schedules/${data[0].id}`)
       } else {
@@ -162,8 +156,9 @@ export default function GenerateSchedulePage() {
 
   if (isLoading) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <p>Loading dealers...</p>
+      <div className="flex flex-col justify-center items-center h-64 space-y-4">
+        <Spinner className="h-12 w-12 text-primary" />
+        <p className="text-lg text-muted-foreground">Loading dealers...</p>
       </div>
     )
   }
@@ -173,7 +168,9 @@ export default function GenerateSchedulePage() {
       <Card>
         <CardHeader>
           <CardTitle>Generate New Schedule</CardTitle>
-          <CardDescription>Select date, shift type, and dealers for the new schedule</CardDescription>
+          <CardDescription>
+            Select date, shift type, dealers, and break preferences for the new schedule
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="grid gap-6 md:grid-cols-2">
@@ -232,8 +229,8 @@ export default function GenerateSchedulePage() {
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="dealers">Select Dealers</TabsTrigger>
-              <TabsTrigger value="firstBreak">First Break</TabsTrigger>
-              <TabsTrigger value="lastBreak">Last Break</TabsTrigger>
+              <TabsTrigger value="firstBreak">First Break Preferences</TabsTrigger>
+              <TabsTrigger value="lastBreak">Last Break Preferences</TabsTrigger>
             </TabsList>
 
             <TabsContent value="dealers" className="mt-4">
@@ -282,36 +279,115 @@ export default function GenerateSchedulePage() {
               <div className="border rounded-md">
                 <div className="p-3 border-b bg-muted/50">
                   <h3 className="font-medium">Select Dealers for First Break</h3>
-                  <p className="text-sm text-muted-foreground">These dealers will get their break early in the shift</p>
+                  <p className="text-sm text-muted-foreground">
+                    These dealers will get their break early in the shift. Punishment for lateness is applied on
+                    regeneration.
+                  </p>
                 </div>
-
                 <div className="p-3 max-h-[300px] overflow-y-auto">
-                  {dealers.length > 0 ? (
+                  {dealers.filter((d) => selectedDealers.includes(d.id)).length > 0 ? (
                     <div className="space-y-2">
-                      {dealers.map((dealer) => (
-                        <div key={dealer.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
-                          <Checkbox
-                            id={`first-break-${dealer.id}`}
-                            checked={firstBreakDealers.includes(dealer.id)}
-                            disabled={!selectedDealers.includes(dealer.id)}
-                            onCheckedChange={(checked) => handleFirstBreakSelect(dealer.id, checked === true)}
-                          />
-                          <Label
-                            htmlFor={`first-break-${dealer.id}`}
-                            className={cn(
-                              "flex-1 cursor-pointer",
-                              !selectedDealers.includes(dealer.id) && "text-muted-foreground line-through",
-                            )}
-                          >
-                            {dealer.name}{" "}
-                            {dealer.nickname && <span className="text-muted-foreground">({dealer.nickname})</span>}
-                            {!selectedDealers.includes(dealer.id) && " (not in schedule)"}
-                          </Label>
-                        </div>
-                      ))}
+                      {dealers
+                        .filter((d) => selectedDealers.includes(d.id))
+                        .map((dealer) => {
+                          const preference = firstBreakPreferences.find((p) => p.dealerId === dealer.id)
+                          const isChecked = !!preference
+                          const currentReason = preference?.reason || "dealer_request"
+                          const isPunishmentActive = !!(
+                            currentReason === "late_for_table" && preference?.punishment?.isActive
+                          )
+
+                          return (
+                            <div key={`gen-first-break-${dealer.id}`} className="p-2 hover:bg-muted/50 rounded-md">
+                              <div className="flex items-center space-x-3">
+                                <Checkbox
+                                  id={`gen-first-break-check-${dealer.id}`}
+                                  checked={isChecked}
+                                  onCheckedChange={(checked) => {
+                                    if (checked) {
+                                      setFirstBreakPreferences((prev) => [
+                                        ...prev,
+                                        { dealerId: dealer.id, reason: "dealer_request" },
+                                      ])
+                                      setLastBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealer.id))
+                                    } else {
+                                      setFirstBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealer.id))
+                                    }
+                                  }}
+                                />
+                                <Label htmlFor={`gen-first-break-check-${dealer.id}`} className="flex-1 cursor-pointer">
+                                  {dealer.name}{" "}
+                                  {dealer.nickname && (
+                                    <span className="text-muted-foreground">({dealer.nickname})</span>
+                                  )}
+                                </Label>
+                                {/* Simplified reason selection for generate page, or remove if too complex here */}
+                              </div>
+                              {isChecked && (
+                                <div className="pl-8 mt-1 space-y-1">
+                                  <select
+                                    value={currentReason}
+                                    onChange={(e) => {
+                                      const newReason = e.target.value as
+                                        | "dealer_request"
+                                        | "late_for_table"
+                                        | "schedule_needs"
+                                        | "other"
+                                      setFirstBreakPreferences((prev) =>
+                                        prev.map((p) =>
+                                          p.dealerId === dealer.id
+                                            ? {
+                                                ...p,
+                                                reason: newReason,
+                                                punishment: newReason === "late_for_table" ? p.punishment : undefined,
+                                              }
+                                            : p,
+                                        ),
+                                      )
+                                    }}
+                                    className="text-xs p-1 border rounded bg-background"
+                                  >
+                                    <option value="dealer_request">По желание</option>
+                                    <option value="late_for_table">Закъснял</option>
+                                    <option value="schedule_needs">Нужди на графика</option>
+                                    <option value="other">Друго</option>
+                                  </select>
+                                  {currentReason === "late_for_table" && (
+                                    <div className="flex items-center space-x-2">
+                                      <Checkbox
+                                        id={`gen-punish-${dealer.id}`}
+                                        checked={isPunishmentActive}
+                                        onCheckedChange={(punishChecked) => {
+                                          setFirstBreakPreferences((prev) =>
+                                            prev.map((p) =>
+                                              p.dealerId === dealer.id
+                                                ? {
+                                                    ...p,
+                                                    punishment: { isActive: punishChecked === true, tablesToWork: 4 },
+                                                  }
+                                                : p,
+                                            ),
+                                          )
+                                        }}
+                                      />
+                                      <Label
+                                        htmlFor={`gen-punish-${dealer.id}`}
+                                        className="text-xs text-muted-foreground"
+                                      >
+                                        Накажи с 4 маси
+                                      </Label>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )
+                        })}
                     </div>
                   ) : (
-                    <div className="text-center py-4 text-muted-foreground">No dealers found</div>
+                    <div className="text-center py-4 text-muted-foreground">
+                      No selected dealers to set preferences for.
+                    </div>
                   )}
                 </div>
               </div>
@@ -321,36 +397,44 @@ export default function GenerateSchedulePage() {
               <div className="border rounded-md">
                 <div className="p-3 border-b bg-muted/50">
                   <h3 className="font-medium">Select Dealers for Last Break</h3>
-                  <p className="text-sm text-muted-foreground">These dealers will get their break late in the shift</p>
+                  <p className="text-sm text-muted-foreground">These dealers will get their break late in the shift.</p>
                 </div>
-
                 <div className="p-3 max-h-[300px] overflow-y-auto">
-                  {dealers.length > 0 ? (
+                  {dealers.filter((d) => selectedDealers.includes(d.id)).length > 0 ? (
                     <div className="space-y-2">
-                      {dealers.map((dealer) => (
-                        <div key={dealer.id} className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md">
-                          <Checkbox
-                            id={`last-break-${dealer.id}`}
-                            checked={lastBreakDealers.includes(dealer.id)}
-                            disabled={!selectedDealers.includes(dealer.id)}
-                            onCheckedChange={(checked) => handleLastBreakSelect(dealer.id, checked === true)}
-                          />
-                          <Label
-                            htmlFor={`last-break-${dealer.id}`}
-                            className={cn(
-                              "flex-1 cursor-pointer",
-                              !selectedDealers.includes(dealer.id) && "text-muted-foreground line-through",
-                            )}
+                      {dealers
+                        .filter((d) => selectedDealers.includes(d.id))
+                        .map((dealer) => (
+                          <div
+                            key={`gen-last-break-${dealer.id}`}
+                            className="flex items-center space-x-2 p-2 hover:bg-muted/50 rounded-md"
                           >
-                            {dealer.name}{" "}
-                            {dealer.nickname && <span className="text-muted-foreground">({dealer.nickname})</span>}
-                            {!selectedDealers.includes(dealer.id) && " (not in schedule)"}
-                          </Label>
-                        </div>
-                      ))}
+                            <Checkbox
+                              id={`gen-last-break-check-${dealer.id}`}
+                              checked={lastBreakPreferences.some((p) => p.dealerId === dealer.id)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setLastBreakPreferences((prev) => [
+                                    ...prev,
+                                    { dealerId: dealer.id, reason: "dealer_request" },
+                                  ])
+                                  setFirstBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealer.id))
+                                } else {
+                                  setLastBreakPreferences((prev) => prev.filter((p) => p.dealerId !== dealer.id))
+                                }
+                              }}
+                            />
+                            <Label htmlFor={`gen-last-break-check-${dealer.id}`} className="flex-1 cursor-pointer">
+                              {dealer.name}{" "}
+                              {dealer.nickname && <span className="text-muted-foreground">({dealer.nickname})</span>}
+                            </Label>
+                          </div>
+                        ))}
                     </div>
                   ) : (
-                    <div className="text-center py-4 text-muted-foreground">No dealers found</div>
+                    <div className="text-center py-4 text-muted-foreground">
+                      No selected dealers to set preferences for.
+                    </div>
                   )}
                 </div>
               </div>
@@ -359,7 +443,14 @@ export default function GenerateSchedulePage() {
 
           <div className="flex justify-end">
             <Button onClick={handleGenerate} disabled={isSubmitting || selectedDealers.length === 0} size="lg">
-              {isSubmitting ? "Generating..." : "Generate Schedule"}
+              {isSubmitting ? (
+                <div className="flex items-center">
+                  <Spinner className="mr-2 h-5 w-5" />
+                  Generating...
+                </div>
+              ) : (
+                "Generate Schedule"
+              )}
             </Button>
           </div>
         </CardContent>

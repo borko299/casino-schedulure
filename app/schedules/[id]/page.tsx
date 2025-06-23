@@ -7,11 +7,36 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { toast } from "sonner"
 import { DeleteConfirmationDialog } from "@/components/delete-confirmation-dialog"
-import { Edit, Printer, RefreshCw, Copy } from 'lucide-react'
-import type { Dealer, Schedule, TimeSlot } from "@/lib/types" // Added TimeSlot
+import { Edit, RefreshCw, Copy } from "lucide-react"
+import type {
+  Dealer,
+  Schedule,
+  TimeSlot,
+  FirstBreakReasonCode,
+  LastBreakReasonCode,
+  DealerBreakPreference,
+} from "@/lib/types"
 import { supabase } from "@/lib/supabase-singleton"
-import { ScheduleTable } from "../schedule-table" // This resolves to app/schedules/schedule-table.tsx
-import { generateSchedule, generateTimeSlots } from "@/lib/utils" // Ensured generateTimeSlots is imported
+import { ScheduleTable } from "../schedule-table"
+import { generateSchedule as generateScheduleAlgorithm, generateTimeSlots } from "@/lib/utils" // Renamed generateSchedule to generateScheduleAlgorithm
+
+// Helper to get reason labels, can be moved to utils if used elsewhere
+const getFirstBreakReasonLabel = (reason: FirstBreakReasonCode): string => {
+  const labels: Record<FirstBreakReasonCode, string> = {
+    dealer_request: "По желание на дилъра",
+    late_for_table: "Закъснял за първа маса",
+    schedule_needs: "Нужди на графика",
+    other: "Друга причина",
+  }
+  return labels[reason] || reason
+}
+
+const getLastBreakReasonLabel = (reason: LastBreakReasonCode): string => {
+  const labels: Record<LastBreakReasonCode, string> = {
+    dealer_request: "По желание на дилъра",
+  }
+  return labels[reason] || reason
+}
 
 export default function ScheduleDetailPage({ params }: { params: { id: string } }) {
   const router = useRouter()
@@ -26,7 +51,7 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
 
   useEffect(() => {
     const fetchData = async () => {
-      setIsLoading(true) // Ensure loading state is true at the start
+      setIsLoading(true)
       try {
         if (!supabase) {
           throw new Error("Supabase client not initialized")
@@ -41,9 +66,7 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         if (scheduleError) throw scheduleError
         if (!scheduleData) throw new Error("Schedule not found")
 
-
         const { data: dealersData, error: dealersError } = await supabase.from("dealers").select("*").order("name")
-
         if (dealersError) throw dealersError
 
         const formattedDateStr = format(new Date(scheduleData.date), "PPPP")
@@ -63,7 +86,6 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         setIsLoading(false)
       }
     }
-
     fetchData()
   }, [params.id])
 
@@ -81,14 +103,10 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
     }
   }
 
-  const handlePrint = () => {
-    window.print()
-  }
-
   const handleRegenerate = async () => {
     if (!schedule || !dealers.length) {
-        toast.error("Не може да се регенерира график без данни за график или дилъри.");
-        return;
+      toast.error("Не може да се регенерира график без данни за график или дилъри.")
+      return
     }
     if (!confirm("Сигурни ли сте, че искате да регенерирате графика? Това ще презапише текущите назначения.")) {
       return
@@ -97,40 +115,47 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
     setIsRegenerating(true)
     try {
       const activeDealerIds = new Set<string>()
-      if (schedule.schedule_data && typeof schedule.schedule_data === 'object') {
+      if (schedule.schedule_data && typeof schedule.schedule_data === "object") {
         Object.values(schedule.schedule_data).forEach((timeSlotData: any) => {
-          if (typeof timeSlotData === 'object' && timeSlotData !== null) {
+          if (typeof timeSlotData === "object" && timeSlotData !== null) {
             Object.keys(timeSlotData).forEach((dealerId) => {
-              if (dealerId !== '_preferences') { // Exclude preferences key
-                 activeDealerIds.add(dealerId);
+              if (dealerId !== "_preferences" && dealerId !== "_manualAdjustments") {
+                activeDealerIds.add(dealerId)
               }
-            });
+            })
           }
-        });
+        })
       }
 
-
-      const activeDealers = dealers.filter((dealer) => activeDealerIds.has(dealer.id))
-      if (activeDealers.length === 0) {
-        toast.warn("Няма активни дилъри в текущия график. Регенерацията може да доведе до празен график.");
-      }
-
-
-      const preferences = schedule.schedule_data?._preferences || {
-        firstBreakDealers: [],
-        lastBreakDealers: [],
-      }
-
-      const newScheduleData = await generateSchedule(activeDealers, schedule.shift_type as "day" | "night", supabase, {
-        firstBreakDealers: preferences.firstBreakDealers || [],
-        lastBreakDealers: preferences.lastBreakDealers || [],
-      })
-
-      newScheduleData._preferences = preferences
-
+      let activeDealers = dealers.filter((dealer) => activeDealerIds.has(dealer.id))
       if (schedule.absent_dealers && schedule.absent_dealers.length > 0) {
-        const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night") // Use imported function
+        const absentDealerIds = new Set(schedule.absent_dealers.map((ad) => ad.dealerId))
+        activeDealers = activeDealers.filter((d) => !absentDealerIds.has(d.id))
+      }
 
+      if (activeDealers.length === 0) {
+        toast.warn(
+          "Няма активни дилъри в текущия график (след отчитане на отсъстващи). Регенерацията може да доведе до празен график.",
+        )
+      }
+
+      // Ensure preferences are correctly passed, including punishment details
+      const preferences = schedule.schedule_data?._preferences || {
+        firstBreakPreferences: [],
+        lastBreakPreferences: [],
+      }
+
+      const newScheduleData = await generateScheduleAlgorithm(
+        activeDealers,
+        schedule.shift_type as "day" | "night",
+        supabase,
+        preferences, // Pass the full preferences object
+      )
+
+      // Preserve preferences and absent dealers in the new schedule data
+      newScheduleData._preferences = preferences
+      if (schedule.absent_dealers && schedule.absent_dealers.length > 0) {
+        const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night")
         for (const absent of schedule.absent_dealers) {
           const startTimeIndex = timeSlotsArray.findIndex((slot) => slot.time === absent.startTime)
           if (startTimeIndex === -1) continue
@@ -139,26 +164,26 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
             if (!newScheduleData[currentSlot]) {
               newScheduleData[currentSlot] = {}
             }
+            // Ensure the absent dealer is marked as BREAK and not overwritten by regeneration
+            // if they were part of activeDealers initially passed to generation
             newScheduleData[currentSlot][absent.dealerId] = "BREAK"
           }
         }
       }
+      // Clear manual adjustments as the schedule is fully regenerated based on preferences
+      newScheduleData._manualAdjustments = []
 
       const { error } = await supabase.from("schedules").update({ schedule_data: newScheduleData }).eq("id", params.id)
       if (error) throw error
 
       toast.success("Графикът е регенериран успешно")
-      // Fetch updated data instead of full reload for better UX
       const { data: updatedScheduleData, error: fetchError } = await supabase
         .from("schedules")
         .select("*")
         .eq("id", params.id)
-        .single();
-      if (fetchError) throw fetchError;
-      if (updatedScheduleData) setSchedule(updatedScheduleData as Schedule);
-      
-      // router.refresh(); // This might be sufficient if server components are used correctly
-      // window.location.reload(); // Avoid full page reload if possible
+        .single()
+      if (fetchError) throw fetchError
+      if (updatedScheduleData) setSchedule(updatedScheduleData as Schedule)
     } catch (error: any) {
       console.error("Error regenerating schedule:", error)
       toast.error(`Грешка при регенериране на графика: ${error.message}`)
@@ -172,25 +197,27 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
 
     setIsCopying(true)
     try {
-      const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night") // Use imported function
+      const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night")
 
       const dealersInSchedule = dealers.filter((dealer) => {
-        return Object.values(schedule.schedule_data!).some((timeSlotData: any) => Object.keys(timeSlotData).includes(dealer.id))
+        return Object.values(schedule.schedule_data!).some((timeSlotData: any) =>
+          Object.keys(timeSlotData).includes(dealer.id),
+        )
       })
 
       const dealerStats = dealersInSchedule.map((dealer) => {
         const stats: {
-            name: string;
-            rotations: number;
-            breaks: number;
-            assignedTables: Set<string>;
-            breakPositions: number[];
+          name: string
+          rotations: number
+          breaks: number
+          assignedTables: Set<string>
+          breakPositions: number[]
         } = {
           name: dealer.nickname ? `${dealer.name} - ${dealer.nickname}` : dealer.name,
           rotations: 0,
           breaks: 0,
           assignedTables: new Set<string>(),
-          breakPositions: [], // Store indices
+          breakPositions: [],
         }
 
         timeSlotsArray.forEach((slot, index) => {
@@ -219,7 +246,7 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         output += `  Почивки в: ${breakPositionsFormatted || "Няма"}\n`
         output += "-".repeat(25) + "\n"
       })
-      
+
       const totalRotations = dealerStats.reduce((sum, stats) => sum + stats.rotations, 0)
       const totalBreaks = dealerStats.reduce((sum, stats) => sum + stats.breaks, 0)
       const avgRotations = dealerStats.length > 0 ? (totalRotations / dealerStats.length).toFixed(2) : "0.00"
@@ -248,24 +275,24 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
 
     setIsCopyingSchedule(true)
     try {
-      const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night") // Use imported function
+      const timeSlotsArray: TimeSlot[] = generateTimeSlots(schedule.shift_type as "day" | "night")
 
       const dealersInSchedule = dealers
         .filter((dealer) => {
-          return Object.values(schedule.schedule_data!).some((timeSlotData: any) => Object.keys(timeSlotData).includes(dealer.id))
+          return Object.values(schedule.schedule_data!).some((timeSlotData: any) =>
+            Object.keys(timeSlotData).includes(dealer.id),
+          )
         })
-        .sort((a, b) => (a.name).localeCompare(b.name)) // Sort by full name
+        .sort((a, b) => a.name.localeCompare(b.name))
 
-      // Create header row: "Дилър" followed by formatted times
       let output = "Дилър"
       timeSlotsArray.forEach((slot) => {
         output += `\t${slot.formattedTime}`
       })
       output += "\n"
 
-      // Create data rows: Dealer name followed by assignments for each time slot
       dealersInSchedule.forEach((dealer) => {
-        const dealerDisplayName = dealer.nickname ? `${dealer.name} - ${dealer.nickname}` : dealer.name;
+        const dealerDisplayName = dealer.nickname ? `${dealer.name} - ${dealer.nickname}` : dealer.name
         output += dealerDisplayName
         timeSlotsArray.forEach((slot) => {
           const assignment = schedule.schedule_data![slot.time]?.[dealer.id] || "-"
@@ -285,7 +312,11 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         output += "Дилър\tОт час\tПричина\n"
         schedule.absent_dealers.forEach((absent) => {
           const dealer = dealers.find((d) => d.id === absent.dealerId)
-          const dealerName = dealer ? (dealer.nickname ? `${dealer.name} - ${dealer.nickname}` : dealer.name) : "Неизвестен"
+          const dealerName = dealer
+            ? dealer.nickname
+              ? `${dealer.name} - ${dealer.nickname}`
+              : dealer.name
+            : "Неизвестен"
           const reason = getAbsenceReasonLabel(absent.reason)
           output += `${dealerName}\t${absent.startTime}\t${reason}\n`
         })
@@ -330,7 +361,8 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
     return reasonLabels[reason] || reason
   }
 
-  // Removed local generateTimeSlots function, using imported one from lib/utils
+  const firstBreakPreferences = schedule.schedule_data?._preferences?.firstBreakPreferences || []
+  const lastBreakPreferences = schedule.schedule_data?._preferences?.lastBreakPreferences || []
 
   return (
     <div className="space-y-6 p-4 md:p-6">
@@ -338,23 +370,29 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         <div>
           <h1 className="text-2xl md:text-3xl font-bold">Детайли за График</h1>
           <p className="text-muted-foreground">
-            {formattedDate} - {schedule.shift_type === "day" ? "Дневна смяна (08:00-20:00)" : "Нощна смяна (20:00-08:00)"}
+            {formattedDate} -{" "}
+            {schedule.shift_type === "day" ? "Дневна смяна (08:00-20:00)" : "Нощна смяна (20:00-08:00)"}
           </p>
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-3 md:flex md:space-x-2 gap-2 w-full md:w-auto">
-          <Button variant="outline" onClick={handlePrint} className="w-full md:w-auto">
-            <Printer className="mr-2 h-4 w-4" />
-            Принтирай
-          </Button>
           <Button variant="outline" onClick={handleCopyScheduleStats} disabled={isCopying} className="w-full md:w-auto">
             <Copy className="mr-2 h-4 w-4" />
             {isCopying ? "Копира..." : "Копирай Статистика"}
           </Button>
-          <Button variant="outline" onClick={handleCopyForGoogleSheets} disabled={isCopyingSchedule} className="w-full md:w-auto">
+          <Button
+            variant="outline"
+            onClick={handleCopyForGoogleSheets}
+            disabled={isCopyingSchedule}
+            className="w-full md:w-auto"
+          >
             <Copy className="mr-2 h-4 w-4" />
             {isCopyingSchedule ? "Копира..." : "Копирай за Sheets"}
           </Button>
-          <Button variant="outline" onClick={() => router.push(`/schedules/${params.id}/edit`)} className="w-full md:w-auto">
+          <Button
+            variant="outline"
+            onClick={() => router.push(`/schedules/${params.id}/edit`)}
+            className="w-full md:w-auto"
+          >
             <Edit className="mr-2 h-4 w-4" />
             Редактирай
           </Button>
@@ -377,6 +415,53 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
         </CardHeader>
         <CardContent>
           <ScheduleTable schedule={schedule} dealers={dealers} />
+
+          {(firstBreakPreferences.length > 0 || lastBreakPreferences.length > 0) && (
+            <div className="mt-6">
+              <h3 className="text-lg font-medium mb-2">Запазени Предпочитания за Почивки</h3>
+              <div className="border rounded-md overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-muted">
+                    <tr>
+                      <th className="p-2 text-left font-semibold">Дилър</th>
+                      <th className="p-2 text-left font-semibold">Тип Почивка</th>
+                      <th className="p-2 text-left font-semibold">Причина</th>
+                      <th className="p-2 text-left font-semibold">Наказание</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {firstBreakPreferences.map((pref: DealerBreakPreference) => {
+                      const dealer = dealers.find((d) => d.id === pref.dealerId)
+                      return (
+                        <tr key={`first-${pref.dealerId}`} className="border-t hover:bg-muted/50">
+                          <td className="p-2">{dealer?.name || pref.dealerId}</td>
+                          <td className="p-2">Първа</td>
+                          <td className="p-2">{getFirstBreakReasonLabel(pref.reason as FirstBreakReasonCode)}</td>
+                          <td className="p-2">
+                            {pref.reason === "late_for_table" && pref.punishment?.isActive
+                              ? `Да (${pref.punishment.tablesToWork} маси)`
+                              : "Не"}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                    {lastBreakPreferences.map((pref: DealerBreakPreference) => {
+                      const dealer = dealers.find((d) => d.id === pref.dealerId)
+                      return (
+                        <tr key={`last-${pref.dealerId}`} className="border-t hover:bg-muted/50">
+                          <td className="p-2">{dealer?.name || pref.dealerId}</td>
+                          <td className="p-2">Последна</td>
+                          <td className="p-2">{getLastBreakReasonLabel(pref.reason as LastBreakReasonCode)}</td>
+                          <td className="p-2">N/A</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {schedule.absent_dealers && schedule.absent_dealers.length > 0 && (
             <div className="mt-6">
               <h3 className="text-lg font-medium mb-2">Отсъстващи дилъри</h3>
@@ -392,12 +477,14 @@ export default function ScheduleDetailPage({ params }: { params: { id: string } 
                   <tbody>
                     {schedule.absent_dealers.map((absent, index) => {
                       const dealer = dealers.find((d) => d.id === absent.dealerId)
-                      const timeSlot = generateTimeSlots(schedule.shift_type as "day" | "night").find( // Use imported
+                      const timeSlot = generateTimeSlots(schedule.shift_type as "day" | "night").find(
                         (t) => t.time === absent.startTime,
                       )
-                      const dealerDisplayName = dealer 
-                        ? (dealer.nickname ? `${dealer.name} - ${dealer.nickname}` : dealer.name) 
-                        : "Неизвестен";
+                      const dealerDisplayName = dealer
+                        ? dealer.nickname
+                          ? `${dealer.name} - ${dealer.nickname}`
+                          : dealer.name
+                        : "Неизвестен"
 
                       return (
                         <tr key={index} className="border-t hover:bg-muted/50">
