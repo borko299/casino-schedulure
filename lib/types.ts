@@ -139,3 +139,10 @@ export type FineStatusInfo = {
   color: string
   icon: string
 }
+
+export type SystemSettings = {
+  id: number
+  dealer_view_offset_minutes: number
+  dealer_view_lookahead_slots: number
+  updated_at: string
+}

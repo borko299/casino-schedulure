@@ -14,7 +14,7 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "График CASINO",
   description: "Система за управление на графици на дилъри",
-    generator: 'v0.dev'
+    generator: 'v0.app'
 }
 
 export default function RootLayout({

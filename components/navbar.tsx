@@ -14,17 +14,21 @@ import {
   Plus,
   DollarSign,
   BarChart,
+  Monitor,
+  Layers,
 } from "lucide-react"
 
 const navigation = [
   { name: "Начало", href: "/", icon: BarChart3 },
   { name: "Дилъри", href: "/dealers", icon: Users },
   { name: "Маси", href: "/tables", icon: TableIcon },
-  { name: "Типове маси", href: "/table-types", icon: Settings },
+  { name: "Типове маси", href: "/table-types", icon: Layers },
   { name: "Графици", href: "/schedules", icon: Calendar },
+  { name: "Дилърски изглед", href: "/dealer-view", icon: Monitor },
   { name: "Репорти", href: "/reports", icon: AlertTriangle },
   { name: "Глоби", href: "/fines", icon: DollarSign },
   { name: "Статистики", href: "/statistics", icon: BarChart },
+  { name: "Настройки", href: "/settings", icon: Settings },
 ]
 
 export function Navbar() {
@@ -99,6 +103,22 @@ export function Navbar() {
                 <Link href="/table-types/add">
                   <Plus className="h-4 w-4 mr-2" />
                   Добави тип
+                </Link>
+              </Button>
+            )}
+            {pathname === "/dealer-view" && (
+              <Button asChild size="sm">
+                <Link href="/dealer-view/add">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Добави изглед
+                </Link>
+              </Button>
+            )}
+            {pathname === "/settings" && (
+              <Button asChild size="sm">
+                <Link href="/settings/edit">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Редактирай настройки
                 </Link>
               </Button>
             )}
