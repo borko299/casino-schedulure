@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label"
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { CalendarIcon, AlertTriangle, CheckCircle } from "lucide-react"
+import { CalendarIcon, AlertTriangle, CheckCircle, Eye, EyeOff, ExternalLink } from "lucide-react"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -27,6 +27,8 @@ import type {
 import { supabase } from "@/lib/supabase-singleton"
 import { generateSchedule as generateScheduleAlgorithm } from "@/lib/schedule-generator"
 import { Spinner } from "@/components/ui/spinner" // Import Spinner
+import { ScheduleDisplaySettings } from "@/components/schedule-display-settings"
+import Link from "next/link"
 
 type AbsenceReasonUi = "sick" | "injured" | "unauthorized" | "voluntary" | "break"
 
@@ -153,7 +155,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
-  // const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false) // Already exists
+  const [isPublishing, setIsPublishing] = useState(false)
+  const [isPublished, setIsPublished] = useState(false)
 
   const [absenceForm, setAbsenceForm] = useState<AbsenceFormData>({
     dealerId: "",
@@ -324,6 +327,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         setSchedule(scheduleResult as Schedule)
         setDate(parsedDate)
         setShiftType(scheduleResult.shift_type)
+        setIsPublished(scheduleResult.published || false)
 
         if (scheduleResult.absent_dealers) {
           setAbsentDealers(scheduleResult.absent_dealers as any[])
@@ -608,7 +612,8 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     }
   }
 
-  const handleSaveClick = () => {
+  const handleSave = () => {
+    // Renamed handleSaveClick to handleSave for consistency
     executeSave()
   }
 
@@ -928,6 +933,25 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
     toast.info("Dealer removed from absent list. Schedule might need regeneration or manual adjustment.")
   }
 
+  const handlePublish = async () => {
+    if (!schedule) return
+    setIsPublishing(true)
+    try {
+      const newStatus = !isPublished
+      const { error } = await supabase.from("schedules").update({ published: newStatus }).eq("id", schedule.id)
+
+      if (error) throw error
+
+      setIsPublished(newStatus)
+      toast.success(newStatus ? "Schedule published to live view" : "Schedule unpublished")
+      router.refresh()
+    } catch (error: any) {
+      toast.error(`Error updating status: ${error.message}`)
+    } finally {
+      setIsPublishing(false)
+    }
+  }
+
   // const [isRegenerating, setIsRegenerating] = useState(false); // Already defined
   const [showRegenerateConfirm, setShowRegenerateConfirm] = useState(false)
 
@@ -1005,21 +1029,55 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold">Edit Schedule</h1>
-        <Button
-          onClick={() => setShowRegenerateConfirm(true)}
-          variant="outline"
-          disabled={isRegenerating || isSubmitting}
-        >
-          {isRegenerating ? (
-            <div className="flex items-center">
-              <Spinner className="mr-2 h-4 w-4" />
-              Regenerating...
-            </div>
-          ) : (
-            "Regenerate Full Schedule"
-          )}
-        </Button>
+        <div>
+          <h1 className="text-3xl font-bold">Edit Schedule</h1>
+          <p className="text-muted-foreground">
+            {date ? format(date, "EEEE, MMMM do, yyyy") : "Loading..."} -{" "}
+            {shiftType === "day" ? "Day Shift" : "Night Shift"}
+          </p>
+        </div>
+        <div className="flex space-x-2 items-center">
+          <Button variant="outline" size="icon" asChild title="Open Live View">
+            <Link href="/live-schedule" target="_blank">
+              <ExternalLink className="h-4 w-4" />
+            </Link>
+          </Button>
+
+          <ScheduleDisplaySettings />
+
+          <Button
+            variant={isPublished ? "default" : "secondary"}
+            onClick={handlePublish}
+            disabled={isPublishing}
+            className="min-w-[120px]"
+          >
+            {isPublished ? (
+              <>
+                <Eye className="mr-2 h-4 w-4" />
+                Published
+              </>
+            ) : (
+              <>
+                <EyeOff className="mr-2 h-4 w-4" />
+                Unpublished
+              </>
+            )}
+          </Button>
+
+          <Button variant="outline" onClick={() => router.back()} disabled={isSubmitting || isRegenerating}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={isSubmitting || isRegenerating}>
+            {isSubmitting ? (
+              <div className="flex items-center">
+                <Spinner className="mr-2 h-4 w-4" />
+                Saving...
+              </div>
+            ) : (
+              "Save Changes"
+            )}
+          </Button>
+        </div>
       </div>
       {showRegenerateConfirm && (
         <Card className="border-yellow-500">
@@ -1087,7 +1145,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         </CardContent>
       </Card>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="grid w-full grid-cols-2">
           <TabsTrigger value="schedule">Schedule</TabsTrigger>
           <TabsTrigger value="actions">Actions</TabsTrigger>
@@ -1473,7 +1531,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                           !extraBreakForm.timeSlot ||
                           !extraBreakForm.reason
                         }
-                        className="w-full"
+                        className="w-full bg-transparent"
                       >
                         {isProcessingExtraBreak ? <Spinner className="mr-2 h-4 w-4" /> : null}
                         Preview Extra Break
@@ -1588,7 +1646,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
                           !dealerChangeForm.dealer2Id ||
                           !dealerChangeForm.timeSlot
                         }
-                        className="w-full"
+                        className="w-full bg-transparent"
                       >
                         {isProcessingDealerChange ? <Spinner className="mr-2 h-4 w-4" /> : null}
                         Preview Dealer Change
@@ -1792,7 +1850,7 @@ export default function EditSchedulePage({ params }: { params: { id: string } })
         <Button variant="outline" onClick={() => router.back()} disabled={isSubmitting || isRegenerating}>
           Cancel
         </Button>
-        <Button onClick={handleSaveClick} disabled={isSubmitting || isRegenerating}>
+        <Button onClick={handleSave} disabled={isSubmitting || isRegenerating}>
           {isSubmitting ? (
             <div className="flex items-center">
               <Spinner className="mr-2 h-4 w-4" />

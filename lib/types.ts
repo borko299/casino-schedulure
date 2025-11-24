@@ -32,6 +32,7 @@ export type Schedule = {
   id: string
   date: string
   shift_type: "day" | "night"
+  published?: boolean // Added published status
   schedule_data: ScheduleData & {
     _preferences?: {
       firstBreakPreferences?: DealerBreakPreference[]
@@ -140,9 +141,10 @@ export type FineStatusInfo = {
   icon: string
 }
 
-export type SystemSettings = {
-  id: number
-  dealer_view_offset_minutes: number
-  dealer_view_lookahead_slots: number
+export type DisplaySettings = {
+  id: string
+  advance_minutes: number
+  slots_to_show: number
+  created_at: string
   updated_at: string
 }
